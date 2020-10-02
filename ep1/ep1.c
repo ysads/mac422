@@ -211,6 +211,25 @@ int fcfs_run(job_list_t* jobs_ready, job_list_t* jobs_done) {
 }
 
 
+int run_scheduler(int scheduler, job_list_t* jobs_ready, job_list_t* jobs_done) {
+    int changes = -1;
+
+    switch (scheduler) {
+        case FCFS:
+            changes = fcfs_run(jobs_ready, jobs_done);
+            break;
+
+        case SRTN:
+            printf("To be done...\n");
+            break;
+
+        case ROUND_ROBIN:
+            printf("To be done...\n");
+            break;
+    }
+    return changes;
+}
+
 
 void write_results(FILE* file, job_list_t* jobs, int context_changes) {
     job_t* job;
@@ -222,6 +241,7 @@ void write_results(FILE* file, job_list_t* jobs, int context_changes) {
     }
     fprintf(file, "%d\n", context_changes);
 }
+
 
 
 int main(int argc, char* argv[]) {
@@ -252,7 +272,7 @@ int main(int argc, char* argv[]) {
      */
     read_jobs(file_input, jobs_ready);
 
-    context_changes = fcfs_run(jobs_ready, jobs_done);
+    context_changes = run_scheduler(scheduler, jobs_ready, jobs_done);
 
     write_results(file_output, jobs_done, context_changes);
 
