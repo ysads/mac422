@@ -44,6 +44,7 @@ void read_jobs(FILE* file, job_list_t* ready_jobs) {
         fscanf(file, "%d", &job->dt);
         fscanf(file, "%d", &job->deadline);
         
+        job->acknowledged = 0;
         job->is_paused = 1;
         job->remaining = job->dt;
         
@@ -168,6 +169,7 @@ void acknowledge_jobs(job_t* curr_job, job_list_t* jobs_ready) {
     }
 }
 
+
 /**
  * Simulates jobs processing using first-come first-served scheduler.
  * A new thread is created for each job and it remains running until
@@ -211,12 +213,14 @@ int fcfs_run(job_list_t* jobs_ready, job_list_t* jobs_done) {
 }
 
 
+/**
+ * Decides which scheduler simulator should be used proxying the amount of
+ * changes it took while simulating the jobs.
+ */
 int run_scheduler(int scheduler, job_list_t* jobs_ready, job_list_t* jobs_done) {
-    int changes = -1;
-
     switch (scheduler) {
         case FCFS:
-            changes = fcfs_run(jobs_ready, jobs_done);
+            return fcfs_run(jobs_ready, jobs_done);
             break;
 
         case SRTN:
@@ -227,7 +231,7 @@ int run_scheduler(int scheduler, job_list_t* jobs_ready, job_list_t* jobs_done) 
             printf("To be done...\n");
             break;
     }
-    return changes;
+    return 0;
 }
 
 
