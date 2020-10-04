@@ -7,10 +7,10 @@ CFLAGS = -Wall -std=c99
 all: bccsh ep1
 
 bccsh:
-	$(CC) $(CFLAGS) bccsh.c -o bccsh.o
+	$(CC) $(CFLAGS) bccsh.c -o bccsh
 
 ep1:
-	$(CC) $(CFLAGS) ep1.c -o ep1.o
+	$(CC) $(CFLAGS) ep1.c -o ep1
 
 clean:
 	rm *.o
