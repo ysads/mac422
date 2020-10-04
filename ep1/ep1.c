@@ -10,12 +10,19 @@
 int DEBUG = 0;
 
 
+/**
+ * Allocates space for a job object.
+ */
 job_t* new_job() {
     job_t* job = (job_t*) malloc(sizeof(job_t));
     return job;
 }
 
 
+/**
+ * Allocates space for a job list object, initializing the jobs list
+ * with NULL.
+ */
 job_list_t* new_job_list() {
     int i;
     job_list_t* jobs = (job_list_t*) malloc(sizeof(job_list_t));
@@ -30,72 +37,60 @@ job_list_t* new_job_list() {
 
 
 /**
- * Parse all jobs from trace file and input them into a list
+ * Removes a job from the job list by comparing their name. Note that it
+ * moves the remaining array one position ahead.
  */
-void read_jobs(FILE* file, job_list_t* ready_jobs) {
-    job_t* job;
+void remove_job(job_list_t* jobs, job_t* job) {
+    int i;
 
-    ready_jobs->length = 0;
-    while (!feof(file)) {
-        job = new_job();
-        
-        fscanf(file, "%s", job->name);
-        fscanf(file, "%d", &job->t0);
-        fscanf(file, "%d", &job->dt);
-        fscanf(file, "%d", &job->deadline);
-        
-        job->acknowledged = 0;
-        job->is_paused = 1;
-        job->remaining = job->dt;
-        
-        ready_jobs->list[ready_jobs->length] = job;
-        ready_jobs->length++;
+    i = 0;
+    while (strcmp(jobs->list[i]->name, job->name) != 0) {
+        i++;
     }
+    while (i < jobs->length) {
+        jobs->list[i] = jobs->list[i+1];
+        i++;
+    }
+    jobs->length--;
 }
 
 
 /**
- * Helper function meant to clear every allocated object
+ * Helper function meant to clear every allocated job. Note that it also
+ * destroys thread-related stuff if the thread ever existed.
  */
 void free_jobs(job_list_t* jobs) {
     job_t* job;
+    int i;
 
-    while (jobs->length >= 0) {
-        job = jobs->list[jobs->length];
+    for (i = 0; i < jobs->length; i++) {
+        job = jobs->list[i];
+
+        if (job->thread) {
+            pthread_mutex_destroy(&job->mutex);
+            pthread_cond_destroy(&job->cond);
+        }
         free(job);
-        jobs->length--;
     }
     free(jobs);
 }
 
 
 /**
- * Tells whether a list has jobs yet to be processed or not
+ * Finishes the simulation of a particular job, recording the instant in
+ * which it ended and moving it from ready to done list.
  */
-int jobs_left(job_list_t jobs_ready) {
-    return jobs_ready.length > 0;
-}
+void finish_simulation(job_simulation_t* simulation) {
+    job_list_t* jobs_done = simulation->jobs_done;
+    time_t finished_at;
 
+    time(&finished_at);
+    simulation->job->tf = finished_at - simulation->started_at;
+    
+    jobs_done->list[jobs_done->length] = simulation->job;
+    jobs_done->length++;
 
-/**
- * Yields whether a job still needs to be executed or not
- */
-int job_finished(job_t* job) {
-    return job->remaining == 0;
-}
-
-
-/**
- * Tells whether the job teorethical start time has passed, which would
- * indicate that the job can run. 
- */
-int can_run(job_t* job, time_t start) {
-    time_t now;
-    time_t job_start = start + job->t0;
-
-    time(&now);
-
-    return now >= job_start;
+    remove_job(simulation->jobs_ready, simulation->job);
 }
 
 
@@ -104,112 +99,239 @@ int can_run(job_t* job, time_t start) {
  * be run onto a separate thread.
  */
 void* work(void* arg) {
-    job_t* job = (job_t*) arg;
+    job_simulation_t* simulation = (job_simulation_t*) arg;
+    job_t* job = (job_t*) simulation->job;
+    
+    debug("%s: started\n", job->name);
 
-    // debug("process %s started using cpu %d\n", job->name, sched_getcpu());
+    while (job->remaining) {
+        debug("%s: %ds left\n", job->name, job->remaining);
+        pthread_mutex_lock(&job->mutex);
+        if (job->is_paused) {
+            debug("%s: paused\n", job->name);
+            pthread_mutex_unlock(&job->mutex);
+            pthread_cond_wait(&job->cond, &job->mutex);
+            debug("%s: resumed\n", job->name);
+        }
+        pthread_mutex_unlock(&job->mutex);
 
-    while (!job_finished(job)) {
         sleep(1);
         job->remaining--;
     }
+
+    finish_simulation(simulation);
+    debug("%s: finished\n", job->name);
 
     return NULL;
 }
 
 
 /**
- * Register the moment the job finished its execution adding it to
- * the list of done jobs.
+ * There are jobs left as long as there is lines to parsed on trace file
+ * or jobs already parsed on ready list.
  */
-void mark_as_finished(int elapsed, job_t* job, job_list_t* jobs_done) {
-    job->tf = elapsed;
-    jobs_done->list[jobs_done->length] = job;
-    jobs_done->length++;
+int jobs_left(FILE* file, job_list_t* jobs_ready) {
+    return !feof(file) || jobs_ready->length > 0;
 }
 
 
 /**
- * Removes a job from the front of a job list, moving the remaining
- * items one position ahead
+ * Preemption occurs whenever the previous and the current jobs are present
+ * and their names don't match.
  */
-void pop_job(job_list_t* jobs) {
-    int i;
-
-    for (i = 0; i < jobs->length - 1; i++) {
-        jobs->list[i] = jobs->list[i+1];
-    }
-    
-    jobs->length--;
-    jobs->list[jobs->length] = NULL;
+int had_preemption(job_t* prev_job, job_t* curr_job) {
+    return prev_job && curr_job && strcmp(prev_job->name, curr_job->name) != 0;
 }
 
 
 /**
- * This function sets a job as acknowledged, ie, as known by the scheduler.
- * Since all jobs are preloaded in memory when the trace file is read, this
- * is the equivalent as 'the batch of jobs received by the system at a particular
- * moment of time'.
+ * Parses job data contained within a given string. This string corresponds
+ * to a line in trace file.
  */
-void acknowledge_jobs(job_t* curr_job, job_list_t* jobs_ready) {
-    int i;
+job_t* read_job(char* job_data) {
     job_t* job;
 
-    if (!curr_job->acknowledged) {
-        debug("new process: %s %d %d %d\n", curr_job->name, curr_job->t0, curr_job->dt, curr_job->deadline);
-        curr_job->acknowledged = 1;
-    }
+    job = new_job();
 
-    i = 1;
-    job = jobs_ready->list[i];
+    sscanf(job_data, "%s %d %d %d", job->name, &job->t0, &job->dt, &job->deadline);
 
-    while (job != NULL && curr_job->t0 == job->t0 && !job->acknowledged) {
-        debug("new process: %s %d %d %d\n", job->name, job->t0, job->dt, job->deadline);
-        job->acknowledged = 1;
-        job = jobs_ready->list[++i];
+    job->thread = NULL;    
+    job->is_paused = 1;
+    job->remaining = job->dt;
+
+    return job;
+}
+
+
+/**
+ * Tries to parse all jobs starting at a particular instant so that we discover all
+ * new jobs and decide which one is the shortest.
+ */
+void jobs_starting_at(FILE* file, job_list_t* next_jobs, int curr_instant) {
+    job_t* job;
+    char job_data[MAX_LINE_LEN];
+
+    while (!feof(file)) {
+        fgets(job_data, MAX_LINE_LEN, file);
+        job = read_job(job_data);
+
+        /**
+         * If the job read does not start in the current instant, rewind to previous
+         * line on trace file and abort execution
+         */
+        if (job->t0 != curr_instant) {
+            fseek(file, -strlen(job_data), SEEK_CUR);
+            break;
+        } else {
+            debug("new process: %s %d %d %d\n", job->name, job->t0, job->dt, job->deadline);
+
+            next_jobs->list[next_jobs->length] = job;
+            next_jobs->length++;
+        }
     }
 }
 
 
 /**
- * Simulates jobs processing using first-come first-served scheduler.
- * A new thread is created for each job and it remains running until
- * it completes its task. Note that a job may not start being processed
- * before its initial time–held in t0 attribute.
+ * Acquires the lock of a particular job's thread and set is paused flag to
+ * true, in such a way that its execution is stopped.
  */
-int fcfs_run(job_list_t* jobs_ready, job_list_t* jobs_done) {
-    job_t* curr_job;
-    time_t start_at, finish_at;
+void pause_job(job_t* job) {
+    if (job == NULL) {
+        return;
+    }
+
+    pthread_mutex_lock(&job->mutex);
+    job->is_paused = 1;
+    pthread_mutex_unlock(&job->mutex);
+}
+
+
+/**
+ * This function shall start a job's thread by updating its associated flag
+ * to true. If the jobs doesn't have a thread yet, creates one and init its
+ * mutex and conditional variables.
+ */
+void start_job(job_simulation_t* simulation) {
+    job_t* job = simulation->job;
+
+    if (job->thread == NULL) { 
+        pthread_mutex_init(&job->mutex, NULL);
+        pthread_cond_init(&job->cond, NULL);
+        pthread_create(&job->thread, NULL, work, simulation);
+    }
+
+    pthread_mutex_lock(&job->mutex);
+    job->is_paused = 0;
+    pthread_cond_signal(&job->cond);
+    pthread_mutex_unlock(&job->mutex);
+}
+
+
+/* ========================== */
+/* ======== SRTN DEFS ======= */
+/* ========================== */
+
+/**
+ * Inserts a new job into a job list in such a way that the list it kept
+ * sorted by its remanining time.
+ */
+void insert_sorted(job_list_t* jobs, job_t* new_job) {
+    int i;
+
+    i = jobs->length;
+    while (i > 0 && jobs->list[i-1]->remaining > new_job->remaining) {
+        jobs->list[i] = jobs->list[i-1];
+        i--;
+    }
+    jobs->list[i] = new_job;
+    jobs->length++;
+}
+
+
+/**
+ * This function inserts all new jobs into the ready list in such a way
+ * that they are sorted by their remaining time.
+ */
+job_t* insert_new_jobs_sorted(job_list_t* next_jobs, job_list_t* jobs_ready) {
+    int i;
+
+    for (i = 0; i < next_jobs->length; i++) {
+        insert_sorted(jobs_ready, next_jobs->list[i]);
+    }
+
+    return jobs_ready->list[0];
+}
+
+
+/**
+ * Simulates jobs processing using shortest-remaining-time-next scheduler.
+ */
+int srtn_run(FILE* file_input, job_list_t* jobs_done) {
+    job_simulation_t simulation;
+    job_list_t *next_jobs, *jobs_ready;
+    job_t *curr_job, *prev_job;
+    time_t start, now;
+    int i, instant, preemptions;
     
-    time(&start_at);
+    time(&start);
+
+    next_jobs = new_job_list();
+    jobs_ready = new_job_list();
     
-    while (jobs_left(*jobs_ready)) {
-        curr_job = jobs_ready->list[0];
-        
-        if (!can_run(curr_job, start_at)) {
-            sleep(1);
-            continue;
+    preemptions = 0;
+    curr_job = NULL;
+
+    simulation.started_at = start;
+    simulation.jobs_done = jobs_done;
+    simulation.jobs_ready = jobs_ready;
+
+    /**
+     * We'll keep iterating until we reach the end of the file or we don't
+     * have any job to process on ready list.
+     */
+    while (jobs_left(file_input, jobs_ready)) {
+        time(&now);
+        instant = now - start;
+        printf("\n\n@ %ds\n", instant);
+
+        /**
+         * We always pause the executing thread before checking any new
+         * processes arriving at the simulator. We also save the current
+         * job being executed so we can find whether a preemption occurred.
+         */
+        pause_job(curr_job);
+        prev_job = curr_job;
+
+        jobs_starting_at(file_input, next_jobs, instant);
+        curr_job = insert_new_jobs_sorted(next_jobs, jobs_ready);
+
+        if (had_preemption(prev_job, curr_job)) {
+            preemptions++;
+        }
+        if (curr_job) {
+            simulation.job = curr_job;
+            start_job(&simulation);
         }
 
-        acknowledge_jobs(curr_job, jobs_ready);
-        
         /**
-         * Creates a new thread using the inner pointer in job object
-         * so that it can perform its task and wait until the thread
-         * finishes
+         * We reset the next_jobs length so we don't end up appending the
+         * future jobs to this helper array; then, we sleep until next second.
          */
-        pthread_create(&curr_job->thread, NULL, work, curr_job);
-        pthread_join(curr_job->thread, NULL);
-
-        time(&finish_at);
-
-        mark_as_finished(finish_at - start_at, curr_job, jobs_done);
-        pop_job(jobs_ready);
+        next_jobs->length = 0;
+        sleep(CLOCK_LEN);
     }
 
     /**
-     * No context change is done since each thread runs until it's done
+     * Makes sure every thread has been finished before trying returning in
+     * addition to freeing the next_jobs list.
      */
-    return 0;
+    for (i = 0; i < jobs_ready->length; i++) {
+        pthread_join(jobs_ready->list[i]->thread, NULL);
+    }
+    free_jobs(next_jobs);
+    
+    return preemptions;
 }
 
 
@@ -217,14 +339,14 @@ int fcfs_run(job_list_t* jobs_ready, job_list_t* jobs_done) {
  * Decides which scheduler simulator should be used proxying the amount of
  * changes it took while simulating the jobs.
  */
-int run_scheduler(int scheduler, job_list_t* jobs_ready, job_list_t* jobs_done) {
+int run_scheduler(int scheduler, FILE* file_input, job_list_t* jobs_done) {
     switch (scheduler) {
         case FCFS:
-            return fcfs_run(jobs_ready, jobs_done);
+            // return fcfs_run(file_input, jobs_done);
             break;
 
         case SRTN:
-            printf("To be done...\n");
+            return srtn_run(file_input, jobs_done);
             break;
 
         case ROUND_ROBIN:
@@ -235,7 +357,7 @@ int run_scheduler(int scheduler, job_list_t* jobs_ready, job_list_t* jobs_done) 
 }
 
 
-void write_results(FILE* file, job_list_t* jobs, int context_changes) {
+void write_results(FILE* file, job_list_t* jobs, int preemptions) {
     job_t* job;
     int i;
 
@@ -243,15 +365,14 @@ void write_results(FILE* file, job_list_t* jobs, int context_changes) {
         job = jobs->list[i];
         fprintf(file, "%s %d %d\n", job->name, job->tf, job->tf - job->t0);
     }
-    fprintf(file, "%d\n", context_changes);
+    fprintf(file, "%d\n", preemptions);
 }
-
 
 
 int main(int argc, char* argv[]) {
     FILE *file_input, *file_output;
-    job_list_t *jobs_ready, *jobs_done;
-    int scheduler, context_changes;
+    job_list_t* jobs_done;
+    int scheduler, preemptions;
 
     if (argc < 4) {
         printf("Uso: ./ep1 <escalonador> <arq-trace> <arq-saida> [d]\n");
@@ -267,23 +388,14 @@ int main(int argc, char* argv[]) {
      */
     DEBUG = (argc == 5 && argv[4][0] == 'd') ? 1 : 0;
 
-    jobs_ready = new_job_list();
     jobs_done = new_job_list();
+    preemptions = run_scheduler(scheduler, file_input, jobs_done);
 
-    /**
-     * Read all the jobs from input file_input at once and make current job
-     * as the first one.
-     */
-    read_jobs(file_input, jobs_ready);
-
-    context_changes = run_scheduler(scheduler, jobs_ready, jobs_done);
-
-    write_results(file_output, jobs_done, context_changes);
+    write_results(file_output, jobs_done, preemptions);
 
     fclose(file_input);
     fclose(file_output);
 
-    free_jobs(jobs_ready);
     free_jobs(jobs_done);
 
     return 0;
