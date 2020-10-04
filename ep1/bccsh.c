@@ -88,7 +88,7 @@ int main (){
         }
         ep[arg]=NULL;
         execve(ep[0], ep, 0);
-        perror("Erro executando ep1");
+        perror("Erro executando o comando");
       }
     }
     /*como command foi mallocado, libera a memoria*/
