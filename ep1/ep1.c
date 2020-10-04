@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <sched.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -9,6 +10,9 @@
 
 int DEBUG = 0;
 
+int getcpu;
+
+time_t start_at;
 
 job_t* new_job() {
     job_t* job = (job_t*) malloc(sizeof(job_t));
@@ -19,7 +23,7 @@ job_t* new_job() {
 job_list_t* new_job_list() {
     int i;
     job_list_t* jobs = (job_list_t*) malloc(sizeof(job_list_t));
-    
+
     jobs->length = 0;
     for (i = 0; i < MAX_JOBS; i++) {
         jobs->list[i] = NULL;
@@ -38,16 +42,16 @@ void read_jobs(FILE* file, job_list_t* ready_jobs) {
     ready_jobs->length = 0;
     while (!feof(file)) {
         job = new_job();
-        
+
         fscanf(file, "%s", job->name);
         fscanf(file, "%d", &job->t0);
         fscanf(file, "%d", &job->dt);
         fscanf(file, "%d", &job->deadline);
-        
+
         job->acknowledged = 0;
         job->is_paused = 1;
         job->remaining = job->dt;
-        
+
         ready_jobs->list[ready_jobs->length] = job;
         ready_jobs->length++;
     }
@@ -87,7 +91,7 @@ int job_finished(job_t* job) {
 
 /**
  * Tells whether the job teorethical start time has passed, which would
- * indicate that the job can run. 
+ * indicate that the job can run.
  */
 int can_run(job_t* job, time_t start) {
     time_t now;
@@ -96,51 +100,6 @@ int can_run(job_t* job, time_t start) {
     time(&now);
 
     return now >= job_start;
-}
-
-
-/**
- * The function which simulates a time consuming task. It is meant to
- * be run onto a separate thread.
- */
-void* work(void* arg) {
-    job_t* job = (job_t*) arg;
-
-    // debug("process %s started using cpu %d\n", job->name, sched_getcpu());
-
-    while (!job_finished(job)) {
-        sleep(1);
-        job->remaining--;
-    }
-
-    return NULL;
-}
-
-
-/**
- * Register the moment the job finished its execution adding it to
- * the list of done jobs.
- */
-void mark_as_finished(int elapsed, job_t* job, job_list_t* jobs_done) {
-    job->tf = elapsed;
-    jobs_done->list[jobs_done->length] = job;
-    jobs_done->length++;
-}
-
-
-/**
- * Removes a job from the front of a job list, moving the remaining
- * items one position ahead
- */
-void pop_job(job_list_t* jobs) {
-    int i;
-
-    for (i = 0; i < jobs->length - 1; i++) {
-        jobs->list[i] = jobs->list[i+1];
-    }
-    
-    jobs->length--;
-    jobs->list[jobs->length] = NULL;
 }
 
 
@@ -171,6 +130,72 @@ void acknowledge_jobs(job_t* curr_job, job_list_t* jobs_ready) {
 
 
 /**
+ * The function which simulates a time consuming task. It is meant to
+ * be run onto a separate thread.
+ */
+void* work(void* arg) {
+    job_list_t* jobs_ready = (job_list_t*) arg;
+    job_t* job = jobs_ready->list[0];
+    time_t now;
+    int i;
+
+    time(&now);
+    now=now - start_at;
+
+    i=1;
+
+    getcpu=sched_getcpu();
+
+    debug("process %s started using cpu %d\n", job->name, getcpu);
+
+    while (!job_finished(job)) {
+        sleep(1);
+
+        /*
+         * Checks if any job is coming to the scheduler at given moment.
+         */
+        if(jobs_ready->list[i]!= NULL && now==jobs_ready->list[i]->t0){
+          acknowledge_jobs(jobs_ready->list[i], jobs_ready);
+          i++;
+        }
+        now++;
+        job->remaining--;
+    }
+
+    return NULL;
+}
+
+
+/**
+ * Register the moment the job finished its execution adding it to
+ * the list of done jobs.
+ */
+void mark_as_finished(int elapsed, job_t* job, job_list_t* jobs_done) {
+    debug("process %s ended using cpu %d\n", job->name, getcpu);
+    job->tf = elapsed;
+    jobs_done->list[jobs_done->length] = job;
+    jobs_done->length++;
+
+}
+
+
+/**
+ * Removes a job from the front of a job list, moving the remaining
+ * items one position ahead
+ */
+void pop_job(job_list_t* jobs) {
+    int i;
+
+    for (i = 0; i < jobs->length - 1; i++) {
+        jobs->list[i] = jobs->list[i+1];
+    }
+
+    jobs->length--;
+    jobs->list[jobs->length] = NULL;
+}
+
+
+/**
  * Simulates jobs processing using first-come first-served scheduler.
  * A new thread is created for each job and it remains running until
  * it completes its task. Note that a job may not start being processed
@@ -178,26 +203,27 @@ void acknowledge_jobs(job_t* curr_job, job_list_t* jobs_ready) {
  */
 int fcfs_run(job_list_t* jobs_ready, job_list_t* jobs_done) {
     job_t* curr_job;
-    time_t start_at, finish_at;
-    
+    time_t finish_at;
+
     time(&start_at);
-    
+
     while (jobs_left(*jobs_ready)) {
         curr_job = jobs_ready->list[0];
-        
+
         if (!can_run(curr_job, start_at)) {
             sleep(1);
             continue;
         }
 
         acknowledge_jobs(curr_job, jobs_ready);
-        
+
         /**
          * Creates a new thread using the inner pointer in job object
          * so that it can perform its task and wait until the thread
          * finishes
          */
-        pthread_create(&curr_job->thread, NULL, work, curr_job);
+        pthread_create(&curr_job->thread, NULL, work, jobs_ready);
+
         pthread_join(curr_job->thread, NULL);
 
         time(&finish_at);
@@ -242,8 +268,10 @@ void write_results(FILE* file, job_list_t* jobs, int context_changes) {
     for (i = 0; i < jobs->length; i++) {
         job = jobs->list[i];
         fprintf(file, "%s %d %d\n", job->name, job->tf, job->tf - job->t0);
+        if(i==jobs->length-1)debug("Tasks finished: %d %d\n", job->tf, job->tf - job->t0);
     }
     fprintf(file, "%d\n", context_changes);
+    debug("Contexts changes: %d\n", context_changes);
 }
 
 
@@ -261,7 +289,7 @@ int main(int argc, char* argv[]) {
     scheduler = atoi(argv[1]);
     file_input = fopen(argv[2], "r");
     file_output = fopen(argv[3], "w");
-    
+
     /**
      * Set the global DEBUG variable if optional debugger parameter is given
      */
