@@ -32,5 +32,6 @@ typedef struct sim_state {
     job_t *job;
     job_list_t* jobs_done;
     job_list_t* jobs_ready;
-    time_t started_at;
+    time_t started_at;          // Instant at which the simulation started
+    pthread_mutex_t mutex;      // Orchestrate operations to jobs_done and jobs_ready accross threads
 } job_simulation_t;
