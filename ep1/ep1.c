@@ -10,7 +10,6 @@
 
 int DEBUG = 0;
 
-
 /* =========================== */
 /*        Memory-related       */
 /* =========================== */
@@ -216,8 +215,6 @@ void finish_simulation(job_simulation_t* simulation) {
     time(&finished_at);
     job->tf = finished_at - simulation->started_at;
 
-    debug("finished %s %d %d\n", job->name, job->tf, job->tf - job->t0);
-    
     jobs_done->list[jobs_done->length] = simulation->job;
     jobs_done->length++;
     
@@ -233,15 +230,21 @@ void finish_simulation(job_simulation_t* simulation) {
 void* work(void* arg) {
     job_simulation_t* simulation = (job_simulation_t*) arg;
     job_t* job = simulation->job;
-    
-    debug("%s: started on cpu %d\n", job->name, 1);
+    int getcpu;
+
+    getcpu = sched_getcpu();
+    debug("%s: started using CPU %d\n", job->name, getcpu);
 
     while (job->remaining) {
         pthread_mutex_lock(&job->mutex);
+
         if (job->is_paused) {
+            debug("%s: paused using CPU %d\n", job->name, getcpu);
+
             pthread_mutex_unlock(&job->mutex);
-            debug("%s: left cpu %d\n", job->name, 1);
             pthread_cond_wait(&job->cond, &job->mutex);
+
+            debug("%s: resumed using CPU %d\n", job->name, getcpu);
         }
         pthread_mutex_unlock(&job->mutex);
 
@@ -250,6 +253,7 @@ void* work(void* arg) {
     }
 
     finish_simulation(simulation);
+    debug("%s: finished. Exit: %s %d %d \n", job->name, job->name, job->tf, job->tf - job->t0);
 
     return NULL;
 }
