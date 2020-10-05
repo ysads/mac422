@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <editline/readline.h>
 
 #define CMD_LEN 100
 #define ARG_LEN 30
@@ -76,7 +77,7 @@ void create_symlink(char* command) {
     strcpy(linkpath, copy+i+1);
     strncpy(target, copy, i);
     
-    if(symlink(target, linkpath)==-1){
+    if (symlink(target, linkpath) == -1) {
         /**
          * Fails in case it can't create the symbolic link, showing the error.
          */
@@ -122,19 +123,24 @@ void execute(char* command) {
 
 
 int main() {
+    using_history();
+
     while (1) {
         char *command;
         size_t command_size = CMD_LEN;
 
+        /**
+         * Display the prompt and save the command read into the history
+         */
         type_prompt();
+        command = readline("");
+
+        printf("command read is: %s\n", command);
+        add_history(command);
 
         /**
-         * Reads a command from shell input and decides whether it's a shell
-         * built-in or an external command.
+         * Decide whether it's a shell built-in or an external command.
          */
-        command = (char *) malloc(command_size * sizeof(char));
-        getline(&command, &command_size, stdin);
-
         if(!strncmp(command, "mkdir", 5)) {
             create_dir(command);
         }

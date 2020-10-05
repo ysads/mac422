@@ -2,7 +2,7 @@ CC = gcc
 
 # flags:
 # -Wall turns on most compiler warnings
-CFLAGS = -Wall -std=c99 -pthread
+CFLAGS = -Wall -std=c99 -pthread -ledit
 
 all: bccsh ep1
 
