@@ -13,4 +13,4 @@ ep1:
 	$(CC) $(CFLAGS) ep1.c -o ep1
 
 clean:
-	rm *.o
+	rm bccsh ep1

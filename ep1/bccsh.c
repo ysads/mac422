@@ -32,7 +32,7 @@ void create_dir(char* command) {
     char copy[ARG_LEN];
     int size = strlen(command);
 
-    strncpy(copy, command+6, size-7);
+    strncpy(copy, command+6, size-6);
 
     if (mkdir(copy, 0700)) {
         /**
@@ -127,7 +127,6 @@ int main() {
 
     while (1) {
         char *command;
-        size_t command_size = CMD_LEN;
 
         /**
          * Display the prompt and save the command read into the history
