@@ -1,12 +1,15 @@
 #include <pthread.h>
 
-#define MAX_JOBS 100
+#define MAX_JOBS 1000
 #define MAX_LINE_LEN 1000
 #define CLOCK_LEN 1
 
 #define FCFS 1
 #define SRTN 2
 #define ROUND_ROBIN 3
+
+#define NOW_OR_BEFORE 1
+#define NOW 2
 
 typedef struct job {
     char name[30];
