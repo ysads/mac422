@@ -1,6 +1,6 @@
 #include <pthread.h>
 
-#define MAX_JOBS 100
+#define MAX_JOBS 1000
 #define MAX_LINE_LEN 1000
 #define CLOCK_LEN 1
 
