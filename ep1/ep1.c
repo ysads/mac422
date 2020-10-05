@@ -1,3 +1,4 @@
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,16 +9,6 @@
 #define debug(...) if (DEBUG) { fprintf(stderr, "[DEBUG] "); fprintf(stderr, __VA_ARGS__); }
 
 int DEBUG = 0;
-
-
-void print_list(char* label, job_list_t* jobs) {
-    int i;
-
-    printf("%s: %d jobs\n", label, jobs->length);
-    for (i = 0; i < jobs->length; i++) {
-        printf("%s: %ds\n", jobs->list[i]->name, jobs->list[i]->remaining);
-    }
-}
 
 
 /* =========================== */
@@ -105,6 +96,19 @@ int same_job(job_t* job_1, job_t* job_2) {
  */
 int had_preemption(job_t* prev_job, job_t* curr_job) {
     return prev_job && curr_job && !same_job(prev_job, curr_job);
+}
+
+/**
+ * Tells whether the job teorethical start time has passed, which would
+ * indicate that the job can run.
+ */
+int is_start_instant_passed(job_t* job, time_t start) {
+    time_t now;
+    time_t job_start = start + job->t0;
+
+    time(&now);
+
+    return now >= job_start;
 }
 
 
@@ -205,9 +209,14 @@ job_t* insert_new_jobs_sorted(job_list_t* next_jobs, job_list_t* jobs_ready) {
 void finish_simulation(job_simulation_t* simulation) {
     job_list_t* jobs_done = simulation->jobs_done;
     time_t finished_at;
+    job_t* job;
+
+    job = simulation->job;
 
     time(&finished_at);
-    simulation->job->tf = finished_at - simulation->started_at;
+    job->tf = finished_at - simulation->started_at;
+
+    debug("finished %s %d %d\n", job->name, job->tf, job->tf - job->t0);
     
     jobs_done->list[jobs_done->length] = simulation->job;
     jobs_done->length++;
@@ -225,12 +234,13 @@ void* work(void* arg) {
     job_simulation_t* simulation = (job_simulation_t*) arg;
     job_t* job = simulation->job;
     
-    debug("%s: started on cpu -\n", job->name);
+    debug("%s: started on cpu %d\n", job->name, 1);
 
     while (job->remaining) {
         pthread_mutex_lock(&job->mutex);
         if (job->is_paused) {
             pthread_mutex_unlock(&job->mutex);
+            debug("%s: left cpu %d\n", job->name, 1);
             pthread_cond_wait(&job->cond, &job->mutex);
         }
         pthread_mutex_unlock(&job->mutex);
@@ -272,7 +282,7 @@ job_t* read_job(char* job_data) {
  * Tries to parse all jobs starting at a particular instant so that we discover all
  * new jobs and decide which one is the shortest.
  */
-void read_jobs_starting_at(FILE* file, job_list_t* next_jobs, int curr_instant) {
+void read_jobs_starting(FILE* file, job_list_t* next_jobs, int instant, int moment) {
     job_t* job;
     char job_data[MAX_LINE_LEN];
 
@@ -281,21 +291,20 @@ void read_jobs_starting_at(FILE* file, job_list_t* next_jobs, int curr_instant) 
         job = read_job(job_data);
 
         /**
-         * If the job read does not start in the current instant, rewind to previous
+         * If the job read does not start at the expected instant, rewind to previous
          * line on trace file and abort execution
          */
-        if (job->t0 != curr_instant) {
-            fseek(file, -strlen(job_data), SEEK_CUR);
-            break;
-        } else {
+        if ((moment == NOW && job->t0 == instant) || (moment == NOW_OR_BEFORE && job->t0 >= instant)) {
             debug("new process: %s %d %d %d\n", job->name, job->t0, job->dt, job->deadline);
 
             next_jobs->list[next_jobs->length] = job;
             next_jobs->length++;
+        } else {
+            fseek(file, -strlen(job_data), SEEK_CUR);
+            break;
         }
     }
 }
-
 
 
 /* =========================== */
@@ -343,6 +352,65 @@ void start_job(job_simulation_t simulation) {
 /* =========================== */
 
 /**
+ * Simulates jobs processing using first-come first-served scheduler.
+ */
+int fcfs_run(FILE* file_input, job_list_t* jobs_done) {
+    job_simulation_t simulation;
+    job_list_t *next_jobs, *jobs_ready;
+    job_t* curr_job;
+    time_t start, now;
+    int instant;
+
+    next_jobs = new_job_list();
+    jobs_ready = new_job_list();
+
+    curr_job = NULL;
+
+    time(&start);
+
+    simulation.started_at = start;
+    simulation.jobs_done = jobs_done;
+    simulation.jobs_ready = jobs_ready;
+
+    /**
+     * We'll keep iterating until we reach the end of the file or we don't
+     * have any job to process on ready list.
+     */
+    while (jobs_left(file_input, jobs_ready)) {
+        time(&now);
+        instant = now - start;
+
+        read_jobs_starting(file_input, next_jobs, instant, NOW_OR_BEFORE);
+        curr_job = append_new_jobs(next_jobs, jobs_ready);
+
+        /**
+         * If there is a job to process, create a new thread using the
+         * inner pointer in job object so that it can perform its task
+         * and wait until the thread finishes.
+         */
+        if (curr_job) {
+            simulation.job = curr_job;
+            start_job(simulation);
+            pthread_join(curr_job->thread, NULL);
+        }
+
+        /**
+         * We reset the next_jobs length so we don't end up appending the
+         * future jobs to this helper array; then, we sleep until next second.
+         */
+        next_jobs->length = 0;
+        sleep(CLOCK_LEN);
+    }
+    free_jobs(next_jobs);
+    
+    /**
+     * No context change is done since each thread runs until it's done
+     */
+    return 0;
+}
+
+
+/**
  * Simulates jobs processing using shortest-remaining-time-next scheduler.
  */
 int srtn_run(FILE* file_input, job_list_t* jobs_done) {
@@ -380,7 +448,7 @@ int srtn_run(FILE* file_input, job_list_t* jobs_done) {
         pause_job(curr_job);
         prev_job = curr_job;
 
-        read_jobs_starting_at(file_input, next_jobs, instant);
+        read_jobs_starting(file_input, next_jobs, instant, NOW);
         curr_job = insert_new_jobs_sorted(next_jobs, jobs_ready);
 
         if (had_preemption(prev_job, curr_job)) {
@@ -412,6 +480,9 @@ int srtn_run(FILE* file_input, job_list_t* jobs_done) {
 }
 
 
+/**
+ * Simulates jobs processing using round robin scheduler.
+ */
 int round_robin_run(FILE* file_input, job_list_t* jobs_done) {
     job_simulation_t simulation;
     job_list_t *next_jobs, *jobs_ready;
@@ -447,7 +518,7 @@ int round_robin_run(FILE* file_input, job_list_t* jobs_done) {
          * If current job is yet to be finished, we shall enqueue it into the
          * next jobs list so that it gets pushed at the end of the ready list.
          */
-        read_jobs_starting_at(file_input, next_jobs, instant);
+        read_jobs_starting(file_input, next_jobs, instant, NOW);
         if (!job_finished(curr_job)) {
             append_job(next_jobs, curr_job);
         }
@@ -500,7 +571,7 @@ int round_robin_run(FILE* file_input, job_list_t* jobs_done) {
 int run_scheduler(int scheduler, FILE* file_input, job_list_t* jobs_done) {
     switch (scheduler) {
         case FCFS:
-            // return fcfs_run(file_input, jobs_done);
+            return fcfs_run(file_input, jobs_done);
             break;
 
         case SRTN:

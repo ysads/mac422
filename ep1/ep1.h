@@ -8,6 +8,9 @@
 #define SRTN 2
 #define ROUND_ROBIN 3
 
+#define NOW_OR_BEFORE 1
+#define NOW 2
+
 typedef struct job {
     char name[30];
     int t0;
