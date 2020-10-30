@@ -4,7 +4,8 @@
 #include <pthread.h>
 #include <unistd.h>
 
-// #define info_ciclista_t int
+#define debug(...) if (DEBUG) { fprintf(stderr, __VA_ARGS__); }
+
 #define MAX_CICLISTAS 10
 #define MAX_CICLISTAS_LARGADA 5
 #define FALSE 0
@@ -12,25 +13,25 @@
 #define INTERVAL_60MS 60000
 #define INTERVAL_20MS 20000
 
+int DEBUG = 1;
+
 typedef struct info_ciclista {
     int id;
-    int speed;
-    int is_broken;
-    int posicao_atual;
+    int velocidade;
+    int quebrado;
     pthread_t* thread;
-} info_ciclista_t;
+} ciclista_t;
 
 typedef struct info_posicao {
     pthread_mutex_t* mutex;
-    info_ciclista_t** ciclistas;
-} info_posicao_t;
+    ciclista_t* ciclista;
+} posicao_t;
 
 typedef struct info_simulacao {
     int d;
     int n;
-    info_posicao_t** pista;
-    info_ciclista_t** quebrados;
-    int ciclistas_restantes;
+    posicao_t*** pista;
+    ciclista_t** quebrados;
 } simulacao_t;
 
 
@@ -38,15 +39,14 @@ typedef struct info_simulacao {
  * Inicializa um ciclista de acordo com as especificações de como eles deveriam estar
  * no começo da primeira volta: a 30km/h e não-quebrados.
  */
-info_ciclista_t* init_ciclista(int id, int posicao_inicial) {
-    info_ciclista_t* info_ciclista;
+ciclista_t* init_ciclista(int id, int posicao_inicial) {
+    ciclista_t* info_ciclista;
 
     info_ciclista = malloc(sizeof(info_ciclista));
 
     info_ciclista->id = id;
-    info_ciclista->is_broken = FALSE;
-    info_ciclista->posicao_atual = posicao_inicial;
-    info_ciclista->speed = 30;
+    info_ciclista->quebrado = FALSE;
+    info_ciclista->velocidade = 30;
     info_ciclista->thread = NULL;
     
     return info_ciclista;
@@ -54,26 +54,37 @@ info_ciclista_t* init_ciclista(int id, int posicao_inicial) {
 
 
 /**
+ * Inicializa uma posição vazia da pista, incluindo o mutex que controla o
+ * seu acesso.
+ */
+posicao_t* init_posicao() {
+    posicao_t* posicao;
+
+    posicao = malloc(sizeof(posicao_t));
+    posicao->ciclista = NULL;
+    posicao->mutex = NULL;
+    // pthread_mutex_init(posicao->mutex, NULL);
+
+    return posicao;
+}
+
+
+/**
  * Aloca o espaço necessário para o vetor de pista, incluindo o vetor auxiliar de
  * cada posição responsável por armazenar os ciclistas ali presentes naquele momento.
  */
-info_posicao_t** init_pista(int d) {
+posicao_t*** init_pista(int d) {
     int i, j;
-    info_posicao_t** pista;
+    posicao_t*** pista;
 
-    pista = (info_posicao_t**) malloc(d * sizeof(info_posicao_t*));
-    
+    pista = (posicao_t***) malloc(d * sizeof(posicao_t**));
+
     for (i = 0; i < d; i++) {
-        pista[i] = malloc(sizeof(info_posicao_t));
-        pista[i]->ciclistas = malloc(MAX_CICLISTAS * sizeof(info_ciclista_t*));
-        
-        // pthread_mutex_init(pista[i]->mutex, NULL);
-
+        pista[i] = (posicao_t**) malloc(MAX_CICLISTAS * sizeof(posicao_t*));
         for (j = 0; j < MAX_CICLISTAS; j++) {
-            pista[i]->ciclistas[j] = NULL;
+            pista[i][j] = init_posicao();
         }
     }
-
     return pista;
 }
 
@@ -83,8 +94,7 @@ simulacao_t* init_simulacao(int d, int n) {
 
     simulacao = (simulacao_t*) malloc(sizeof(simulacao_t));
     
-    simulacao->ciclistas_restantes = n;
-    simulacao->quebrados = (info_ciclista_t**) malloc(n * sizeof(info_ciclista_t*));
+    simulacao->quebrados = (ciclista_t**) malloc(n * sizeof(ciclista_t*));
     simulacao->pista = init_pista(d);
     simulacao->d = d;
     simulacao->n = n;
@@ -98,17 +108,17 @@ simulacao_t* init_simulacao(int d, int n) {
  */
 void free_simulacao(simulacao_t* simulacao, int d) {
     int i, j;
-    info_posicao_t** pista;
+    posicao_t*** pista;
 
     pista = simulacao->pista;
 
     for (i = 0; i < d; i++) {
         for (j = 0; j < MAX_CICLISTAS; j++) {
-            if (pista[i]->ciclistas[j] != NULL) {
-                free(pista[i]->ciclistas[j]);
+            if (pista[i][j]->ciclista != NULL) {   // remover quando o ep estiver pronto, pq no final não vai haver ciclista na pista
+                free(pista[i][j]->ciclista);
             }
+            free(pista[i][j]);
         }
-        free(pista[i]->ciclistas);
         free(pista[i]);
     }
     free(simulacao->pista);
@@ -137,10 +147,10 @@ void* ciclista(void* args) {
  * alguma das posições iniciais da pista. Note que cada ciclista aqui é identificado
  * por um inteiro entre 0 e n-1 (inclusive).
  */
-void dar_largada(info_posicao_t** pista, int d, int n) {
+void dar_largada(posicao_t*** pista, int d, int n) {
     int i, j, id_ciclista, posicao_pista;
     int* ids;
-    info_ciclista_t* info_ciclista;
+    ciclista_t* info_ciclista;
 
     i = n;
     ids = (int*) calloc(n, sizeof(int));
@@ -166,7 +176,7 @@ void dar_largada(info_posicao_t** pista, int d, int n) {
         if (!ids[id_ciclista]) {
             ids[id_ciclista] = TRUE;
             info_ciclista = init_ciclista(id_ciclista, i);
-            pista[posicao_pista]->ciclistas[j] = info_ciclista;
+            pista[posicao_pista][j]->ciclista = info_ciclista;
 
             i--;
             j++;
@@ -184,31 +194,29 @@ void dar_largada(info_posicao_t** pista, int d, int n) {
 }
 
 
-void print_pista(info_posicao_t** pista, int d) {
+void print_pista(posicao_t*** pista, int d) {
     int i, j;
 
     for (i = 0; i < d; i++) {
-        printf("pos %d: \t", (i + 1));
+        fprintf(stderr, "pos %2d: \t", (i + 1));
         for (j = 0; j < MAX_CICLISTAS; j++) {
-            if (pista[i]->ciclistas[j] != NULL) {
-                printf("%02d \t", pista[i]->ciclistas[j]->id);
+            if (pista[i][j] != NULL && pista[i][j]->ciclista != NULL) {
+                fprintf(stderr, "%02d \t", pista[i][j]->ciclista->velocidade);
+            } else {
+                fprintf(stderr, "  -  \t");
             }
         }
-        printf("\n");
+        fprintf(stderr, "\n");
     }
 }
 
-
-int corrida_finalizada(simulacao_t* simulacao) {
-    return simulacao->ciclistas_restantes == 0;
-}
 
 int main(int argc, char* argv[]) {
     int n, d;
     simulacao_t* simulacao;
     
     if (argc < 3) {
-        printf("Uso: ./ep2 <d> <n> [debug]\n");
+        fprintf(stderr, "Uso: ./ep2 <d> <n> [debug]\n");
         return 1;
     }
     d = atoi(argv[1]);
@@ -219,18 +227,9 @@ int main(int argc, char* argv[]) {
      */
     srand(time(NULL));
 
-    // pista = init_pista(d);
     simulacao = init_simulacao(d, n);
     dar_largada(simulacao->pista, d, n);
 
-    while (!corrida_finalizada(simulacao)) {
-        printf("falta: %d\n", simulacao->ciclistas_restantes);
-        simulacao->ciclistas_restantes--;
-        usleep(INTERVAL_60MS);
-    }
-    
-    print_pista(simulacao->pista, d);
-    
     free_simulacao(simulacao, d);
 
     return 0;
