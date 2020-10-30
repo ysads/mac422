@@ -19,11 +19,14 @@ typedef struct info_ciclista {
     int id;
     int velocidade;
     int quebrado;
-    pthread_t* thread;
+    int i;
+    int j;
+    int volta_atual;
+    pthread_t thread;
 } ciclista_t;
 
 typedef struct info_posicao {
-    pthread_mutex_t* mutex;
+    pthread_mutex_t mutex;
     ciclista_t* ciclista;
 } posicao_t;
 
@@ -31,25 +34,71 @@ typedef struct info_simulacao {
     int d;
     int n;
     posicao_t*** pista;
-    ciclista_t** quebrados;
+    ciclista_t** ciclistas;
 } simulacao_t;
 
 
 /**
- * Inicializa um ciclista de acordo com as especificações de como eles deveriam estar
- * no começo da primeira volta: a 30km/h e não-quebrados.
+ * Variável global que guarda o estado atual da simulação.
  */
-ciclista_t* init_ciclista(int id, int posicao_inicial) {
-    ciclista_t* info_ciclista;
+simulacao_t* simulacao;
 
-    info_ciclista = malloc(sizeof(info_ciclista));
 
-    info_ciclista->id = id;
-    info_ciclista->quebrado = FALSE;
-    info_ciclista->velocidade = 30;
-    info_ciclista->thread = NULL;
+/* ============================================================ */
+/*                       FUNÇÕES P/ DEBUG                       */
+/* ============================================================ */
+
+void print_ciclistas() {
+    int i;
+    ciclista_t* ciclista;
+
+    printf("\n");
+    for (i = 0; i < simulacao->n; i++) {
+        ciclista = simulacao->ciclistas[i]; 
+        if (ciclista != NULL) {
+            debug("%2d: %d km/h @ (%d, %d)\n", ciclista->id, ciclista->velocidade, ciclista->i, ciclista->j);
+        }
+    }
+}
+
+
+void print_pista() {
+    int i, j;
+    posicao_t*** pista;
+
+    pista = simulacao->pista;
+
+    for (i = 0; i < simulacao->d; i++) {
+        fprintf(stderr, "%2d: \t", (i + 1));
+        for (j = 0; j < MAX_CICLISTAS; j++) {
+            if (pista[i][j] != NULL && pista[i][j]->ciclista != NULL) {
+                fprintf(stderr, "%2d \t", pista[i][j]->ciclista->id);
+            } else {
+                fprintf(stderr, " -  \t");
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
+
+/**
+ * Inicializa um ciclista de acordo com as especificações de como eles deveriam estar
+ * no começo da primeira volta: a 30km/h e não-ciclistas.
+ */
+ciclista_t* init_ciclista(int id, int i, int j) {
+    ciclista_t* ciclista;
+
+    ciclista = (ciclista_t*) malloc(sizeof(ciclista_t));
+
+    ciclista->id = id;
+    ciclista->quebrado = FALSE;
+    ciclista->velocidade = 30;
+    ciclista->i = i;
+    ciclista->j = j;
+    ciclista->volta_atual = 1;
     
-    return info_ciclista;
+    return ciclista;
 }
 
 
@@ -62,8 +111,7 @@ posicao_t* init_posicao() {
 
     posicao = malloc(sizeof(posicao_t));
     posicao->ciclista = NULL;
-    posicao->mutex = NULL;
-    // pthread_mutex_init(posicao->mutex, NULL);
+    pthread_mutex_init(&posicao->mutex, NULL);
 
     return posicao;
 }
