@@ -17,6 +17,7 @@
 #define INTERVAL_1MS   1000
 
 int DEBUG = 1;
+int last_minute_extra_speed;
 
 typedef struct info_ciclista {
     int id;
@@ -118,7 +119,7 @@ int intervalo(ciclista_t* ciclista) {
 /*
  * Checa se a pista j esta livre no ponto i para o ciclista andar
  */
-int pista_livre(int i, int j, ciclista_t* ciclista){
+int pista_livre(int i, int j){
   int resultado;
 
   resultado = (j < MAX_CICLISTAS && simulacao->pista[i][j]->ciclista == NULL)? 1 : 0;
@@ -138,14 +139,11 @@ posicao_t* proxima_posicao(ciclista_t* ciclista) {
     j=ciclista->j;
     d=simulacao->d;
 
+    if(!pista_livre(i+1, j) && !pista_livre(i+1, j+1))
+      return simulacao->pista[i][j];
+
     prox_i = (i + 1) % d;
-    prox_j = (pista_livre((i+1)%d, j, ciclista) || !pista_livre((i+1)%d, j+1, ciclista)) ? j : j+1;
-    /*if(pista_livre((i+1)%d, j, ciclista) || !pista_livre((i+1)%d, j+1, ciclista)){
-      prox_j = j;
-    }
-    else{
-      prox_j=j+1;
-    }*/
+    prox_j = (pista_livre((i+1)%d, j) || !pista_livre((i+1)%d, j+1)) ? j : j+1;
 
     return simulacao->pista[prox_i][prox_j];
 }
@@ -156,17 +154,57 @@ void mudar_velocidade(ciclista_t* ciclista){
 
   nova_velocidade = rand() % 100;
 
-  switch(ciclista->velocidade){
-    case 30:
-        ciclista->velocidade = (nova_velocidade < 20) ? 30 : 60;
-        ciclista->random=nova_velocidade;
-        break;
-
-    case 60:
-        ciclista->velocidade = (nova_velocidade < 40) ? 30 : 60;
-        ciclista->random=nova_velocidade;
-        break;
+  if(simulacao->ciclistas_restantes==3 && !last_minute_extra_speed){
+    switch(ciclista->velocidade){
+        case 30:
+            if(nova_velocidade > 18 && nova_velocidade < 90)
+                ciclista->velocidade=60;
+            else if(nova_velocidade < 90){
+                ciclista->velocidade=90;
+                last_minute_extra_speed=1;
+            }
+            break;
+        case 60:
+            if(nova velocidade < 36)
+                ciclista->velocidade=30;
+            else if(nova_velocidade < 90){
+                ciclista->velocidade=90;
+                last_minute_extra_speed=1;
+            }
+            break;
+    }
   }
+  else{
+    switch(ciclista->velocidade){
+      case 30:
+          ciclista->velocidade = (nova_velocidade < 20) ? 30 : 60;
+          ciclista->random=nova_velocidade;
+          break;
+      case 60:
+          ciclista->velocidade = (nova_velocidade < 40) ? 30 : 60;
+          ciclista->random=nova_velocidade;
+          break;
+    }
+  }
+}
+
+
+/**
+ * Remove um ciclista da pista e registra o momento em que ele finalizou a prova.
+ */
+void remover_ciclista(ciclista_t* ciclista) {
+    posicao_t* posicao;
+
+    posicao = simulacao->pista[ciclista->i][ciclista->j];
+
+    pthread_mutex_lock(&simulacao->mutex_ciclistas);
+    pthread_mutex_lock(&posicao->mutex);
+
+    posicao->ciclista = NULL;
+    simulacao->ciclistas_restantes--;
+
+    pthread_mutex_unlock(&simulacao->mutex_ciclistas);
+    pthread_mutex_unlock(&posicao->mutex);
 }
 
 
@@ -213,28 +251,14 @@ void mover_ciclista(ciclista_t* ciclista) {
 
     if (mudou_volta) {
         ciclista->volta_atual++;
+        if(ciclista->volta_atual%6==0){
+            int quebra=rand()%100;
+            if(quebra>95)remover_ciclista(ciclista);
+        }
         mudar_velocidade(ciclista);
+        // fazer tabela com quando os ciclistas passaram de volta.
         debug("%d => volta %d!\n", ciclista->id, ciclista->volta_atual);
     }
-}
-
-
-/**
- * Remove um ciclista da pista e registra o momento em que ele finalizou a prova.
- */
-void remover_ciclista(ciclista_t* ciclista) {
-    posicao_t* posicao;
-
-    posicao = simulacao->pista[ciclista->i][ciclista->j];
-
-    pthread_mutex_lock(&simulacao->mutex_ciclistas);
-    pthread_mutex_lock(&posicao->mutex);
-
-    posicao->ciclista = NULL;
-    simulacao->ciclistas_restantes--;
-
-    pthread_mutex_unlock(&simulacao->mutex_ciclistas);
-    pthread_mutex_unlock(&posicao->mutex);
 }
 
 
@@ -444,6 +468,7 @@ int main(int argc, char* argv[]) {
     d = atoi(argv[1]);
     n = atoi(argv[2]);
 
+    last_minute_extra_speed=0;
     /**
      * Define a semente do gerador de números aleatórios.
      */
@@ -454,7 +479,12 @@ int main(int argc, char* argv[]) {
 
     while (simulacao->ciclistas_restantes > 0) {
         print_pista();
-        usleep(INTERVAL_60MS);
+        if(simulacao->ciclistas_restantes > 3 || !last_minute_extra_speed){
+          usleep(INTERVAL_60MS);
+        }
+        else{
+          usleep(INTERVAL_20MS);
+        }
     }
 
     print_ciclistas();
