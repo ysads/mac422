@@ -2,7 +2,7 @@ CC = gcc
 
 # flags:
 # -Wall turns on most compiler warnings
-CFLAGS = -Wall -std=c99 -pthread -ledit
+CFLAGS = -Wall -std=c99 -pthread 
 
 all: clean ep2
 
