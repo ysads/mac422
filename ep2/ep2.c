@@ -22,6 +22,7 @@ typedef struct info_ciclista {
     int id;
     int velocidade;
     int quebrado;
+    int random;
     int i;
     int j;
     int volta_atual;
@@ -104,7 +105,7 @@ int intervalo(ciclista_t* ciclista) {
         case 60:
             return INTERVAL_60MS;
             break;
-    
+
         case 90:
             return INTERVAL_40MS;
             break;
@@ -114,17 +115,58 @@ int intervalo(ciclista_t* ciclista) {
 }
 
 
+/*
+ * Checa se a pista j esta livre no ponto i para o ciclista andar
+ */
+int pista_livre(int i, int j, ciclista_t* ciclista){
+  int resultado;
+
+  resultado = (j < MAX_CICLISTAS && simulacao->pista[i][j]->ciclista == NULL)? 1 : 0;
+
+  return resultado;
+}
+
+
 /**
  * Decide para onde mover um ciclista com base no estado atual dele, decidindo inclusive
  * se há a possibilidade de ultrapassar alguém à frente.
  */
 posicao_t* proxima_posicao(ciclista_t* ciclista) {
-    int prox_i, prox_j;
+    int prox_i, prox_j, i, j, d;
 
-    prox_i = (ciclista->i + 1) % simulacao->d;
-    prox_j = ciclista->j;      // aqui deve vir a decisão de ultrapassagem
+    i=ciclista->i;
+    j=ciclista->j;
+    d=simulacao->d;
+
+    prox_i = (i + 1) % d;
+    prox_j = (pista_livre((i+1)%d, j, ciclista) || !pista_livre((i+1)%d, j+1, ciclista)) ? j : j+1;
+    /*if(pista_livre((i+1)%d, j, ciclista) || !pista_livre((i+1)%d, j+1, ciclista)){
+      prox_j = j;
+    }
+    else{
+      prox_j=j+1;
+    }*/
 
     return simulacao->pista[prox_i][prox_j];
+}
+
+
+void mudar_velocidade(ciclista_t* ciclista){
+  int nova_velocidade;
+
+  nova_velocidade = rand() % 100;
+
+  switch(ciclista->velocidade){
+    case 30:
+        ciclista->velocidade = (nova_velocidade < 20) ? 30 : 60;
+        ciclista->random=nova_velocidade;
+        break;
+
+    case 60:
+        ciclista->velocidade = (nova_velocidade < 40) ? 30 : 60;
+        ciclista->random=nova_velocidade;
+        break;
+  }
 }
 
 
@@ -154,9 +196,9 @@ void mover_ciclista(ciclista_t* ciclista) {
     mudou_volta = (prox_posicao->i == 0 && posicao_atual->i == simulacao->d - 1) ? TRUE : FALSE;
 
     if (prox_posicao->ciclista == NULL) {
-        debug("%d\t", ciclista->id);
+        /*debug("%d\t", ciclista->id);
         debug("put %d\t", prox_posicao->i);
-        debug("clear %d\n", posicao_atual->i);
+        debug("clear %d\n", posicao_atual->i);*/
         prox_posicao->ciclista = ciclista;
         posicao_atual->ciclista = NULL;
         ciclista->i = prox_posicao->i;
@@ -171,6 +213,7 @@ void mover_ciclista(ciclista_t* ciclista) {
 
     if (mudou_volta) {
         ciclista->volta_atual++;
+        mudar_velocidade(ciclista);
         debug("%d => volta %d!\n", ciclista->id, ciclista->volta_atual);
     }
 }
@@ -209,12 +252,13 @@ void* simular_ciclista(void* args) {
     // pthread_cond_wait();
     tempo_gasto = 0;
 
-    while (ciclista->volta_atual == 1) {
+    while (ciclista->volta_atual <= 5) {
         tempo_espera = intervalo(ciclista);
 
         mover_ciclista(ciclista);
         usleep(tempo_espera);
         tempo_gasto += tempo_espera;
+
     }
 
     remover_ciclista(ciclista);
@@ -241,7 +285,7 @@ ciclista_t* init_ciclista(int id, int i, int j) {
     ciclista->volta_atual = 1;
 
     pthread_create(&ciclista->thread, NULL, simular_ciclista, ciclista);
-    
+
     return ciclista;
 }
 
@@ -291,7 +335,7 @@ simulacao_t* init_simulacao(int d, int n) {
     simulacao_t* sim;
 
     sim = (simulacao_t*) malloc(sizeof(simulacao_t));
-    
+
     sim->ciclistas = (ciclista_t**) malloc(n * sizeof(ciclista_t*));
     sim->pista = init_pista(d);
     sim->d = d;
@@ -389,9 +433,10 @@ void dar_largada(posicao_t*** pista, int d, int n) {
 }
 
 
+
 int main(int argc, char* argv[]) {
     int n, d;
-    
+
     if (argc < 3) {
         fprintf(stderr, "Uso: ./ep2 <d> <n> [debug]\n");
         return 1;
