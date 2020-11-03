@@ -16,8 +16,8 @@
 #define INTERVAL_20MS  20000
 #define INTERVAL_1MS   1000
 
-int DEBUG = 1;
-int last_minute_extra_speed;
+int DEBUG = 0;
+int ha_ciclista_a_90;
 
 typedef struct info_ciclista {
     int id;
@@ -38,12 +38,19 @@ typedef struct info_posicao {
     int j;
 } posicao_t;
 
+typedef struct info_ranking {
+    int ciclistas_registrados;
+    ciclista_t** ciclistas;
+    pthread_mutex_t mutex;
+} ranking_t;
+
 typedef struct info_simulacao {
     int d;
     int n;
     int ciclistas_restantes;
     posicao_t*** pista;
     ciclista_t** ciclistas;
+    ranking_t** ranking_voltas;
     pthread_mutex_t mutex_ciclistas;
 } simulacao_t;
 
@@ -54,19 +61,20 @@ typedef struct info_simulacao {
 simulacao_t* simulacao;
 
 
-/* ============================================================ */
-/*                       FUNÇÕES P/ DEBUG                       */
-/* ============================================================ */
-
 void print_ciclistas() {
     int i;
     ciclista_t* ciclista;
 
     printf("\n");
+    // Puxar dados do ranking aqui
     for (i = 0; i < simulacao->n; i++) {
         ciclista = simulacao->ciclistas[i];
         if (ciclista != NULL) {
-            debug("%2d: %0.2lfms @ (%d, %d)\n", ciclista->id, ciclista->tempo_gasto, ciclista->i, ciclista->j);
+            if (ciclista->quebrado) {
+                debug("%d: quebrou na volta %d\n", ciclista->id, ciclista->volta_atual);
+            } else {
+                debug("%d: %do lugar – %0.2lfms\n", ciclista->id, i, ciclista->tempo_gasto);
+            }
         }
     }
 }
@@ -92,6 +100,18 @@ void print_pista() {
     }
 }
 
+
+void print_ranking(int volta) {
+    int i;
+    ranking_t* ranking;
+
+    ranking = simulacao->ranking_voltas[volta];
+
+    fprintf(stderr, "\nRanking da volta %d:\n", volta + 1);
+    for (i = 0; i < ranking->ciclistas_registrados; i++) {
+        fprintf(stderr, "%d. Ciclista %d\n", i, ranking->ciclistas[i]->id);
+    }
+}
 
 /**
  * Define quanto tempo deve passar antes entre duas mudanças de posição
@@ -135,12 +155,13 @@ int pista_livre(int i, int j){
 posicao_t* proxima_posicao(ciclista_t* ciclista) {
     int prox_i, prox_j, i, j, d;
 
-    i=ciclista->i;
-    j=ciclista->j;
-    d=simulacao->d;
+    i = ciclista->i;
+    j = ciclista->j;
+    d = simulacao->d;
 
-    if(!pista_livre(i+1, j) && !pista_livre(i+1, j+1))
+    if (!pista_livre((i+1)%d, j) && !pista_livre((i+1)%d, j+1)) {
       return simulacao->pista[i][j];
+    }
 
     prox_i = (i + 1) % d;
     prox_j = (pista_livre((i+1)%d, j) || !pista_livre((i+1)%d, j+1)) ? j : j+1;
@@ -149,43 +170,69 @@ posicao_t* proxima_posicao(ciclista_t* ciclista) {
 }
 
 
+/**
+ * Decide qual a nova velocidade do ciclista com base na velocidade atual e nas
+ * regras de negócio:
+ *
+ * 30km/h => 80% para 60km/h | 20% para 30km/h
+ * 60km/h => 60% para 60km/h | 40% para 30km/h
+ *
+ * Quando houver 3 ciclistas restantes => 1 ciclista tem 10% de chance para 90 km/h
+ */
 void mudar_velocidade(ciclista_t* ciclista){
   int nova_velocidade;
 
   nova_velocidade = rand() % 100;
 
-  if(simulacao->ciclistas_restantes==3 && !last_minute_extra_speed){
-    switch(ciclista->velocidade){
+  if (simulacao->ciclistas_restantes == 3 && !ha_ciclista_a_90){
+    switch (ciclista->velocidade){
         case 30:
-            if(nova_velocidade > 18 && nova_velocidade < 90)
-                ciclista->velocidade=60;
-            else if(nova_velocidade < 90){
-                ciclista->velocidade=90;
-                last_minute_extra_speed=1;
+            if (nova_velocidade > 18 && nova_velocidade < 90) {
+                ciclista->velocidade = 60;
+            } else if(nova_velocidade < 90) {
+                ciclista->velocidade = 90;
+                ha_ciclista_a_90 = 1;
             }
             break;
         case 60:
-            if(nova velocidade < 36)
-                ciclista->velocidade=30;
-            else if(nova_velocidade < 90){
-                ciclista->velocidade=90;
-                last_minute_extra_speed=1;
+            if (nova_velocidade < 36) {
+                ciclista->velocidade = 30;
+            } else if (nova_velocidade < 90) {
+                ciclista->velocidade = 90;
+                ha_ciclista_a_90 = 1;
             }
             break;
     }
-  }
-  else{
-    switch(ciclista->velocidade){
+  } else {
+    switch (ciclista->velocidade){
       case 30:
           ciclista->velocidade = (nova_velocidade < 20) ? 30 : 60;
-          ciclista->random=nova_velocidade;
+          ciclista->random = nova_velocidade;
           break;
       case 60:
           ciclista->velocidade = (nova_velocidade < 40) ? 30 : 60;
-          ciclista->random=nova_velocidade;
+          ciclista->random = nova_velocidade;
           break;
     }
   }
+}
+
+
+/**
+ * Função que guarda a lógica de quebra de um ciclista, decidindo se houve quebra e marcando
+ * a flag apropriada.
+ */
+void decidir_se_ciclista_quebrou(ciclista_t* ciclista) {
+    int quebra;
+
+    if (ciclista->volta_atual % 6 == 0 && simulacao->ciclistas_restantes > 5) {
+        quebra = rand() % 100;
+
+        if (quebra > 95) {
+            ciclista->quebrado = TRUE;
+            fprintf(stderr, "%d quebrou na volta %d\n", ciclista->id, ciclista->volta_atual);
+        }
+    }
 }
 
 
@@ -208,6 +255,37 @@ void remover_ciclista(ciclista_t* ciclista) {
 }
 
 
+/**
+ * A cada vez que um ciclista mudar de volta, essa função verifica se é necessário
+ * registrar a posição dele no ranking daquela volta em particular.
+ */
+void registrar_ranking(ciclista_t* ciclista) {
+    int num_eliminacao;
+    ranking_t *ranking;
+
+    /**
+     * Não deve haver registro de ranking caso o ciclista continue rodando por estar
+     * aguardando que outro ciclista mais lento finalize suas voltas.
+     */
+    if (ciclista->volta_atual >= 2*simulacao->n) return;
+
+    num_eliminacao = ciclista->volta_atual - 1;
+    ranking = simulacao->ranking_voltas[num_eliminacao];
+
+    pthread_mutex_lock(&ranking->mutex);
+
+    ranking->ciclistas[ranking->ciclistas_registrados] = ciclista;
+    // printf("%d \t %dth\n", ciclista->id, ranking->ciclistas_registrados);
+    ranking->ciclistas_registrados++;
+
+    pthread_mutex_unlock(&ranking->mutex);
+}
+
+
+/**
+ * Função que controla a movimentação de um ciclista ao longo da pista, orquestrando
+ * inclusive os efeitos colaterais dessa ação – atualizar ranking, mudar velocidade, etc.
+ */
 void mover_ciclista(ciclista_t* ciclista) {
     int prox_posicao_primeiro, mudou_volta;
     posicao_t *prox_posicao, *posicao_atual;
@@ -221,8 +299,6 @@ void mover_ciclista(ciclista_t* ciclista) {
      */
     prox_posicao_primeiro = rand() % 2;
 
-    // debug("moving %d – %c\n", ciclista->id, (prox_posicao_primeiro ? 'P' : 'A'));
-
     if (prox_posicao_primeiro) {
         pthread_mutex_lock(&prox_posicao->mutex);
         pthread_mutex_lock(&posicao_atual->mutex);
@@ -234,9 +310,6 @@ void mover_ciclista(ciclista_t* ciclista) {
     mudou_volta = (prox_posicao->i == 0 && posicao_atual->i == simulacao->d - 1) ? TRUE : FALSE;
 
     if (prox_posicao->ciclista == NULL) {
-        /*debug("%d\t", ciclista->id);
-        debug("put %d\t", prox_posicao->i);
-        debug("clear %d\n", posicao_atual->i);*/
         prox_posicao->ciclista = ciclista;
         posicao_atual->ciclista = NULL;
         ciclista->i = prox_posicao->i;
@@ -250,14 +323,14 @@ void mover_ciclista(ciclista_t* ciclista) {
     pthread_mutex_unlock(&posicao_atual->mutex);
 
     if (mudou_volta) {
+        registrar_ranking(ciclista);
+
         ciclista->volta_atual++;
-        if(ciclista->volta_atual%6==0){
-            int quebra=rand()%100;
-            if(quebra>95)remover_ciclista(ciclista);
-        }
+
         mudar_velocidade(ciclista);
-        // fazer tabela com quando os ciclistas passaram de volta.
-        debug("%d => volta %d!\n", ciclista->id, ciclista->volta_atual);
+        decidir_se_ciclista_quebrou(ciclista);
+
+        // debug("%d => volta %d!\n", ciclista->id, ciclista->volta_atual);
     }
 }
 
@@ -273,16 +346,19 @@ void* simular_ciclista(void* args) {
     /**
      * Espera até que o simulador autorize essa linha de ciclistas a se mover.
      */
-    // pthread_cond_wait();
     tempo_gasto = 0;
 
-    while (ciclista->volta_atual <= 5) {
+    /**
+     * Continua a se mover até que termine a corrida ou até que o ciclista tenha quebrado.
+     */
+    // while (!(ciclista->eliminado && ciclista->quebrado)) {
+    while (ciclista->volta_atual <= 7 && !ciclista->quebrado) {
         tempo_espera = intervalo(ciclista);
 
         mover_ciclista(ciclista);
+
         usleep(tempo_espera);
         tempo_gasto += tempo_espera;
-
     }
 
     remover_ciclista(ciclista);
@@ -332,6 +408,27 @@ posicao_t* init_posicao(int i, int j) {
 
 
 /**
+ * Inicializa o vetor de rankings usado para registrar a colocação de cada ciclista nas
+ * voltas de eliminação.
+ */
+ranking_t** init_rankings(int n, int voltas) {
+    int i;
+    ranking_t** rankings;
+
+    rankings = (ranking_t**) malloc(voltas * sizeof(ranking_t*));
+    for (i = 0; i < voltas; i++) {
+        rankings[i] = (ranking_t*) malloc(sizeof(ranking_t));
+        rankings[i]->ciclistas = (ciclista_t**) malloc(n * sizeof(ranking_t*));
+        rankings[i]->ciclistas_registrados = 0;
+
+        pthread_mutex_init(&rankings[i]->mutex, NULL);
+    }
+
+    return rankings;
+}
+
+
+/**
  * Aloca o espaço necessário para o vetor de pista, incluindo o vetor auxiliar de
  * cada posição responsável por armazenar os ciclistas ali presentes naquele momento.
  */
@@ -356,19 +453,20 @@ posicao_t*** init_pista(int d) {
  * ciclistas.
  */
 simulacao_t* init_simulacao(int d, int n) {
+    int i;
     simulacao_t* sim;
 
     sim = (simulacao_t*) malloc(sizeof(simulacao_t));
 
-    sim->ciclistas = (ciclista_t**) malloc(n * sizeof(ciclista_t*));
     sim->pista = init_pista(d);
     sim->d = d;
     sim->n = n;
     sim->ciclistas_restantes = n;
+    sim->ciclistas = (ciclista_t**) malloc(n * sizeof(ciclista_t*));
+    sim->ranking_voltas = init_rankings(n, 2*n);
 
     pthread_mutex_init(&sim->mutex_ciclistas, NULL);
 
-    int i;
     for (i = 0; i < n; i++) {
         sim->ciclistas[i] = NULL;
     }
@@ -380,11 +478,13 @@ simulacao_t* init_simulacao(int d, int n) {
 /**
  * Percorre todas as posições de memória alocadas dinamicamente e as libera.
  */
-void free_simulacao(simulacao_t* simulacao, int d) {
-    int i, j;
+void free_simulacao(simulacao_t* simulacao) {
+    int i, j, d, n;
     posicao_t*** pista;
 
     pista = simulacao->pista;
+    d = simulacao->d;
+    n = simulacao->n;
 
     for (i = 0; i < d; i++) {
         for (j = 0; j < MAX_CICLISTAS; j++) {
@@ -396,9 +496,15 @@ void free_simulacao(simulacao_t* simulacao, int d) {
         }
         free(pista[i]);
     }
+    for (i = 0; i < n; i++) {
+        pthread_mutex_destroy(&simulacao->ranking_voltas[i]->mutex);
+        free(simulacao->ranking_voltas[i]->ciclistas);
+        free(simulacao->ranking_voltas[i]);
+    }
     pthread_mutex_destroy(&simulacao->mutex_ciclistas);
     free(simulacao->pista);
     free(simulacao->ciclistas);
+    free(simulacao->ranking_voltas);
     free(simulacao);
 }
 
@@ -467,8 +573,10 @@ int main(int argc, char* argv[]) {
     }
     d = atoi(argv[1]);
     n = atoi(argv[2]);
+    DEBUG = (argc == 4) ? 1 : 0;
 
-    last_minute_extra_speed=0;
+    ha_ciclista_a_90 = 0;
+
     /**
      * Define a semente do gerador de números aleatórios.
      */
@@ -478,16 +586,20 @@ int main(int argc, char* argv[]) {
     dar_largada(simulacao->pista, d, n);
 
     while (simulacao->ciclistas_restantes > 0) {
-        print_pista();
-        if(simulacao->ciclistas_restantes > 3 || !last_minute_extra_speed){
+        if (DEBUG) {
+            print_pista();
+        }
+
+        if (!ha_ciclista_a_90){
+          usleep(INTERVAL_20MS);
+        } else {
           usleep(INTERVAL_60MS);
         }
-        else{
-          usleep(INTERVAL_20MS);
-        }
     }
-
-    print_ciclistas();
+    for (int i = 0; i < 2*n; i++) {
+        print_ranking(i);
+    }
+    // print_ciclistas();
 
     /**
      * Aguarda até que todas as threads tenha finalizado sua simulação.
@@ -496,7 +608,7 @@ int main(int argc, char* argv[]) {
         pthread_join(simulacao->ciclistas[i]->thread, NULL);
     }
 
-    free_simulacao(simulacao, d);
+    free_simulacao(simulacao);
 
     return 0;
 }
