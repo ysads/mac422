@@ -22,6 +22,7 @@ int ha_ciclista_a_90;
 typedef struct info_ciclista {
     int id;
     int velocidade;
+    int eliminado;
     int quebrado;
     int i;
     int j;
@@ -39,6 +40,8 @@ typedef struct info_posicao {
 
 typedef struct info_ranking {
     int ciclistas_registrados;
+    int ciclista_eliminado;
+    int ciclistas_restantes;
     ciclista_t** ciclistas;
     pthread_mutex_t mutex;
 } ranking_t;
@@ -108,7 +111,7 @@ void print_ranking(int volta) {
 
     fprintf(stderr, "\nRanking da volta %d:\n", volta + 1);
     for (i = 0; i < ranking->ciclistas_registrados; i++) {
-        fprintf(stderr, "%d. Ciclista %d\n", i+1, ranking->ciclistas[i]->id);
+        fprintf(stderr, "%4d. Ciclista %d\n", i+1, ranking->ciclistas[i]->id);
     }
 }
 
@@ -223,7 +226,7 @@ void mudar_velocidade(ciclista_t* ciclista){
  * a flag apropriada.
  */
 void decidir_se_ciclista_quebrou(ciclista_t* ciclista) {
-    int quebra;
+    int quebra, i;
 
     if (ciclista->volta_atual % 6 == 0 && simulacao->ciclistas_restantes > 5) {
         quebra = rand() % 100;
@@ -231,6 +234,10 @@ void decidir_se_ciclista_quebrou(ciclista_t* ciclista) {
         if (quebra > 95) {
             ciclista->quebrado = TRUE;
             fprintf(stderr, "%d quebrou na volta %d\n", ciclista->id, ciclista->volta_atual);
+            for(i=ciclista->volta_atual-1; simulacao->ranking_voltas[i]->ciclistas_restantes;i++){
+              simulacao->ranking_voltas[i]->ciclistas_restantes--;
+            }
+            simulacao->ciclistas_restantes--;
         }
     }
 }
@@ -248,7 +255,6 @@ void remover_ciclista(ciclista_t* ciclista) {
     pthread_mutex_lock(&posicao->mutex);
 
     posicao->ciclista = NULL;
-    simulacao->ciclistas_restantes--;
 
     pthread_mutex_unlock(&simulacao->mutex_ciclistas);
     pthread_mutex_unlock(&posicao->mutex);
@@ -261,6 +267,8 @@ void remover_ciclista(ciclista_t* ciclista) {
  */
 void registrar_ranking(ciclista_t* ciclista) {
     int num_eliminacao;
+    int ciclistas_atrasados;
+    int i;
     ranking_t *ranking;
 
     /**
@@ -272,11 +280,45 @@ void registrar_ranking(ciclista_t* ciclista) {
     num_eliminacao = ciclista->volta_atual - 1;
     ranking = simulacao->ranking_voltas[num_eliminacao];
 
+
+    /*
+     * Mostra quantos ciclistas ainda estao competindo na volta atual.
+     */
+    if(!ranking->ciclistas_registrados){
+      if(num_eliminacao==0){
+        ranking->ciclistas_restantes=simulacao->ciclistas_restantes;
+      }
+      simulacao->ranking_voltas[num_eliminacao+1]->ciclistas_restantes=simulacao->ciclistas_restantes;
+    }
+
     pthread_mutex_lock(&ranking->mutex);
 
     ranking->ciclistas[ranking->ciclistas_registrados] = ciclista;
     // printf("%d \t %dth\n", ciclista->id, ranking->ciclistas_registrados);
     ranking->ciclistas_registrados++;
+
+    if(num_eliminacao%2==1){
+      /*
+       * Checa se a eliminacao da penultima volta foi feita ou se o ultimo colocado daquela
+       * volta ainda não foi eliminado.
+       */
+      /*ciclistas_atrasados=0;
+      for(i=num_eliminacao-2; i>0 && !simulacao->ranking_voltas[i]->ciclista_eliminado; i-=2){
+        ciclistas_atrasados++;
+      }*/
+      /*
+       * Elimina o ultimo ciclista e sinaliza que essa volta ja eliminou o ultimo colocado dela.
+       */
+      if(ranking->ciclistas_registrados==ranking->ciclistas_restantes /*- ciclistas_atrasados*/){
+        ciclista->eliminado=1;
+        ranking->ciclista_eliminado=1;
+        for(i=ciclista->volta_atual; simulacao->ranking_voltas[i]->ciclistas_restantes;i++){
+          simulacao->ranking_voltas[i]->ciclistas_restantes--;
+        }
+        simulacao->ciclistas_restantes--;
+      }
+    }
+
 
     pthread_mutex_unlock(&ranking->mutex);
 }
@@ -352,7 +394,7 @@ void* simular_ciclista(void* args) {
      * Continua a se mover até que termine a corrida ou até que o ciclista tenha quebrado.
      */
     // while (!(ciclista->eliminado && ciclista->quebrado)) {
-    while (ciclista->volta_atual <= 7 && !ciclista->quebrado) {
+    while (!(ciclista->quebrado || ciclista->eliminado)) {
         tempo_espera = intervalo(ciclista);
 
         mover_ciclista(ciclista);
@@ -378,6 +420,7 @@ ciclista_t* init_ciclista(int id, int i, int j) {
     ciclista = (ciclista_t*) malloc(sizeof(ciclista_t));
 
     ciclista->id = id;
+    ciclista->eliminado = 0;
     ciclista->quebrado = FALSE;
     ciclista->velocidade = 30;
     ciclista->i = i;
@@ -420,7 +463,7 @@ ranking_t** init_rankings(int n, int voltas) {
         rankings[i] = (ranking_t*) malloc(sizeof(ranking_t));
         rankings[i]->ciclistas = (ciclista_t**) malloc(n * sizeof(ranking_t*));
         rankings[i]->ciclistas_registrados = 0;
-
+        rankings[i]->ciclista_eliminado=0;
         pthread_mutex_init(&rankings[i]->mutex, NULL);
     }
 
@@ -596,7 +639,8 @@ int main(int argc, char* argv[]) {
           usleep(INTERVAL_60MS);
         }
     }
-    for (int i = 0; i < 2*n; i++) {
+    for (int i = 0; i < 2*n && simulacao->ranking_voltas[i]!= NULL &&
+         simulacao->ranking_voltas[i]->ciclistas_registrados; i++) {
         print_ranking(i);
     }
     // print_ciclistas();
