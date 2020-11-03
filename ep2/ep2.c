@@ -23,7 +23,6 @@ typedef struct info_ciclista {
     int id;
     int velocidade;
     int quebrado;
-    int random;
     int i;
     int j;
     int volta_atual;
@@ -109,7 +108,7 @@ void print_ranking(int volta) {
 
     fprintf(stderr, "\nRanking da volta %d:\n", volta + 1);
     for (i = 0; i < ranking->ciclistas_registrados; i++) {
-        fprintf(stderr, "%d. Ciclista %d\n", i, ranking->ciclistas[i]->id);
+        fprintf(stderr, "%d. Ciclista %d\n", i+1, ranking->ciclistas[i]->id);
     }
 }
 
@@ -152,22 +151,25 @@ int pista_livre(int i, int j){
  * Decide para onde mover um ciclista com base no estado atual dele, decidindo inclusive
  * se há a possibilidade de ultrapassar alguém à frente.
  */
-posicao_t* proxima_posicao(ciclista_t* ciclista) {
-    int prox_i, prox_j, i, j, d;
+ posicao_t* proxima_posicao(ciclista_t* ciclista) {
+     int prox_i, prox_j, i, j, d, pos;
 
-    i = ciclista->i;
-    j = ciclista->j;
-    d = simulacao->d;
+     i=ciclista->i;
+     j=ciclista->j;
+     d=simulacao->d;
 
-    if (!pista_livre((i+1)%d, j) && !pista_livre((i+1)%d, j+1)) {
-      return simulacao->pista[i][j];
-    }
+     for(pos=j+1; pos<10; pos++){
+       if(pista_livre((i+1)%d, pos)) break;
+     }
 
-    prox_i = (i + 1) % d;
-    prox_j = (pista_livre((i+1)%d, j) || !pista_livre((i+1)%d, j+1)) ? j : j+1;
+     if(!pista_livre((i+1)%d, j) && pos==10)
+       return simulacao->pista[i][j];
 
-    return simulacao->pista[prox_i][prox_j];
-}
+     prox_i = (i + 1) % d;
+     prox_j = (pista_livre((i+1)%d, j) || pos==10) ? j : pos;
+
+     return simulacao->pista[prox_i][prox_j];
+ }
 
 
 /**
@@ -189,7 +191,7 @@ void mudar_velocidade(ciclista_t* ciclista){
         case 30:
             if (nova_velocidade > 18 && nova_velocidade < 90) {
                 ciclista->velocidade = 60;
-            } else if(nova_velocidade < 90) {
+            } else if(nova_velocidade > 90) {
                 ciclista->velocidade = 90;
                 ha_ciclista_a_90 = 1;
             }
@@ -197,7 +199,7 @@ void mudar_velocidade(ciclista_t* ciclista){
         case 60:
             if (nova_velocidade < 36) {
                 ciclista->velocidade = 30;
-            } else if (nova_velocidade < 90) {
+            } else if (nova_velocidade > 90) {
                 ciclista->velocidade = 90;
                 ha_ciclista_a_90 = 1;
             }
@@ -207,11 +209,9 @@ void mudar_velocidade(ciclista_t* ciclista){
     switch (ciclista->velocidade){
       case 30:
           ciclista->velocidade = (nova_velocidade < 20) ? 30 : 60;
-          ciclista->random = nova_velocidade;
           break;
       case 60:
           ciclista->velocidade = (nova_velocidade < 40) ? 30 : 60;
-          ciclista->random = nova_velocidade;
           break;
     }
   }
