@@ -280,10 +280,12 @@ void elimina_ciclista (int volta_de_eliminacao){
     ciclista_eliminado = volta->ciclistas[volta->ciclistas_registrados - 1];
     ciclista_eliminado->eliminado = 1;
 
-    for(i=volta_de_eliminacao+1; i< simulacao->n * 2;i++){
-      pthread_mutex_lock(&simulacao->ranking_voltas[i]->mutex);
-      simulacao->ranking_voltas[i]->ciclistas_restantes--;
-      pthread_mutex_unlock(&simulacao->ranking_voltas[i]->mutex);
+    if(simulacao->ciclistas_restantes > 1){
+      for(i=volta_de_eliminacao+1; i< simulacao->n * 2;i++){
+        pthread_mutex_lock(&simulacao->ranking_voltas[i]->mutex);
+        simulacao->ranking_voltas[i]->ciclistas_restantes--;
+        pthread_mutex_unlock(&simulacao->ranking_voltas[i]->mutex);
+      }
     }
 
     pthread_mutex_lock(&simulacao->mutex_ciclistas);
@@ -332,7 +334,6 @@ void registrar_ranking(ciclista_t* ciclista) {
       }
     }
 
-
     pthread_mutex_unlock(&ranking->mutex);
 }
 
@@ -379,7 +380,6 @@ void mover_ciclista(ciclista_t* ciclista) {
 
     if (mudou_volta && simulacao->ciclistas_restantes > 1) {
         registrar_ranking(ciclista);
-
         ciclista->volta_atual++;
 
         mudar_velocidade(ciclista);
@@ -387,9 +387,8 @@ void mover_ciclista(ciclista_t* ciclista) {
 
         // debug("%d => volta %d!\n", ciclista->id, ciclista->volta_atual);
     } else if(mudou_volta && simulacao->ciclistas_restantes==1){
-       if(ciclista->finalizar_corrida>1){
+       if(ciclista->finalizar_corrida>0){
          registrar_ranking(ciclista);
-
          ciclista->volta_atual++;
          ciclista->finalizar_corrida--;
 
