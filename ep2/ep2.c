@@ -166,8 +166,6 @@ int pista_livre(int i, int j){
        if(pista_livre((i+1)%d, pos)) break;
      }
 
-     if(!pista_livre((i+1)%d, j) && pos==10)
-       return simulacao->pista[i][j];
 
      prox_i = (i + 1) % d;
      prox_j = (pista_livre((i+1)%d, j) || pos==10) ? j : pos;
@@ -229,7 +227,7 @@ void mudar_velocidade(ciclista_t* ciclista){
 void decidir_se_ciclista_quebrou(ciclista_t* ciclista) {
     int quebra, i;
 
-    if (ciclista->volta_atual % 6 == 1 && simulacao->ciclistas_restantes > 5 && ciclista->volta_atual/6>0) {
+    if (ciclista->volta_atual % 6 == 0 && simulacao->ciclistas_restantes > 5) {
         quebra = rand() % 100;
 
         if (quebra > 95) {
@@ -267,9 +265,29 @@ void remover_ciclista(ciclista_t* ciclista) {
 }
 
 
+void remover_ciclista_da_volta(int volta, ciclista_t* ciclista){
+  int i, j;
+  ranking_t* ranking_volta;
+
+  ranking_volta = simulacao->ranking_voltas[volta];
+
+  for(i=0; i< ranking_volta->ciclistas_registrados; i++){
+    if(ranking_volta->ciclistas[i]->id==ciclista->id){
+      for(j=i; j<ranking_volta->ciclistas_registrados; j++){
+        ranking_volta->ciclistas[j]=ranking_volta->ciclistas[j+1];
+      }
+      ranking_volta->ciclistas[ranking_volta->ciclistas_registrados]=0;
+      ranking_volta->ciclistas_registrados--;
+      fprintf(stderr, "Ciclista %d retirado da volta %d\n", ciclista->id, volta);
+      break;
+    }
+  }
+}
+
+
 void elimina_ciclista (int volta_de_eliminacao){
   int i;
-  ranking_t *volta;
+  ranking_t* volta;
   ciclista_t* ciclista_eliminado;
 
   if(volta_de_eliminacao!= simulacao->volta_de_eliminacao) return;
@@ -279,6 +297,18 @@ void elimina_ciclista (int volta_de_eliminacao){
   while(!volta->ciclistas_restantes){
     ciclista_eliminado = volta->ciclistas[volta->ciclistas_registrados - 1];
     ciclista_eliminado->eliminado = 1;
+
+    if(ciclista_eliminado->volta_atual > volta_de_eliminacao - 1){
+      int i;
+
+      i=ciclista_eliminado->volta_atual - volta_de_eliminacao - 1;
+
+      pthread_mutex_lock(&simulacao->mutex_ciclistas);
+      for(; i>0; i--){
+        remover_ciclista_da_volta(ciclista_eliminado->volta_atual - i, ciclista_eliminado);
+      }
+      pthread_mutex_unlock(&simulacao->mutex_ciclistas);
+    }
 
     if(simulacao->ciclistas_restantes > 1){
       for(i=volta_de_eliminacao+1; i< simulacao->n * 2;i++){
@@ -365,11 +395,11 @@ void mover_ciclista(ciclista_t* ciclista) {
 
     mudou_volta = (prox_posicao->i == 0 && posicao_atual->i == simulacao->d - 1) ? TRUE : FALSE;
 
-    if (prox_posicao->ciclista == NULL) {
-        prox_posicao->ciclista = ciclista;
-        posicao_atual->ciclista = NULL;
-        ciclista->i = prox_posicao->i;
-        ciclista->j = prox_posicao->j;
+    if(prox_posicao->ciclista == NULL){
+      prox_posicao->ciclista = ciclista;
+      posicao_atual->ciclista = NULL;
+      ciclista->i = prox_posicao->i;
+      ciclista->j = prox_posicao->j;
     }
 
     /**
