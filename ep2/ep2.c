@@ -10,11 +10,11 @@
 #define MAX_CICLISTAS_LARGADA 5
 #define FALSE 0
 #define TRUE 1
-#define INTERVAL_120MS 120000
-#define INTERVAL_60MS  60000
-#define INTERVAL_40MS  40000
-#define INTERVAL_20MS  20000
-#define INTERVAL_1MS   1000
+#define INTERVAL_120MS 1200
+#define INTERVAL_60MS  600
+#define INTERVAL_40MS  400
+#define INTERVAL_20MS  200
+#define INTERVAL_1MS   10
 
 int DEBUG = 0;
 int ha_ciclista_a_90;
@@ -709,8 +709,8 @@ int main(int argc, char* argv[]) {
         }
     }
     for (int i = 0; i < 2*n && simulacao->ranking_voltas[i]!= NULL &&
-         simulacao->ranking_voltas[i]->ciclistas_registrados; i++) {
-        print_ranking(i);
+        simulacao->ranking_voltas[i]->ciclistas_registrados; i++) {
+        // print_ranking(i);
     }
     print_ciclistas();
 
