@@ -1,15 +1,52 @@
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <fstream>
 #include <string>
 #include <vector>
 
+#define BLOCK_SIZE 4096
+#define MAX_FS_SIZE 100000000
+#define MAX_BLOCKS (MAX_FS_SIZE / BLOCK_SIZE)
+
 using namespace std;
 
+/**
+ * Representa os metadados de um único arquivo dentro do sistema de arquivos.
+ * Note que, apesar de não haver um limite explícito para o tamanho de `name`,
+ * consideremos como 255 caracters tal limite.
+ */
+typedef struct {
+  string name;
+  size_t size;
+  time_t created;
+  time_t last_access;
+  time_t last_modified;
+} vfile_t;
+
+/**
+ * Representa um diretório dentro do sistema de arquivos.
+ */
+typedef struct {
+  string name;
+  vector<vfile_t> children;
+} vdir_t;
+
+/**
+ * Representa o sistema de arquivos propriamente dito, incluindo tabela FAT,
+ * o bitmap representando os blocos livres/usados e o arquivo no sistema físico
+ * onde nossa abstração vai ser armazenada.
+ */
 typedef struct {
   fstream file;
+  int fat[MAX_BLOCKS];
+  int bitmap[MAX_BLOCKS];
 } filesystem_t;
 
+/**
+ * Abstrai um comando para o sistema de arquivo, separando comando built-in
+ * dos seus argumentos.
+ */
 typedef struct {
   string cmd;
   vector<string> args;
