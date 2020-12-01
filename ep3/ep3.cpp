@@ -78,38 +78,27 @@ bool is_fs_empty() {
 
 
 /**
- * Já que não é possível escrever um bit por vez no arquivo, a única forma de
- * sincronizar o bitmap é condensando vários grupos de 8 bits consecutivos num único
- * byte que os represente. Isso é feito tomando a representação desses 8 bits num
- * inteiro entre 0 e 255.
+ * Já que não é possível escrever um bit por vez no arquivo, a gente converte o bitmap
+ * na sua representação decimal. Como em geral um inteiro usa 4 bytes para ser representado,
+ * são escritos zeros à esquerda do inteiro de modo que ele ocupe o primeiro todo o primeiro
+ * block, ie 4kb.
  */
 void write_bitmap_to_fs() {
-  int j;
-  char encoded_segment;
-  string segment;
+  int padding;
+  string binary;
 
-  cout << "bef seek: " << fs.file.tellp() << endl;
   fs.file.seekp(ios::beg);
-  cout << "aft seek: " << fs.file.tellp() << endl;
 
-  for (int i = 0; i < MAX_BLOCKS; i += 8) {
-    segment = "";
+  binary = "";
+  padding = BLOCK_SIZE - sizeof(int);
 
-    /**
-     * Agrega os 8 bits numa string única
-     */
-    for (int j = i; j < (i+8); j++) {
-      segment.append(to_string(fs.bitmap[j]));
-    }
-
-    /**
-     * O inteiro equivalente à string gerada acima é obtido com a conversão abaixo,
-     * sendo escrito no arquivo.
-     */
-    encoded_segment = stoi(segment, 0, 2);
-
-    fs.file << encoded_segment;
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    binary.append(to_string(fs.bitmap[i]));
   }
+  for (int i = 0; i < padding; i++) {
+    fs.file << "0";
+  }
+  fs.file << stoi(binary, 0, 2);
 }
 
 
