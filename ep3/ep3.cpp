@@ -136,6 +136,21 @@ void init_empty_fs() {
 
 
 /**
+ * Reads an already initialized filesystem, parsing its bitmap FAT table.
+ */
+void parse_fs() {
+  int fat[MAX_BLOCKS];
+  char bitmap[MAX_BLOCKS];
+
+  fs.file.seekg(ios::beg);
+  fs.file.read((char*) fs.bitmap, MAX_BLOCKS);
+
+  fs.file.seekg(BITMAP_SIZE, ios::beg);
+  fs.file.read((char*) fs.fat, MAX_BLOCKS * sizeof(int));
+}
+
+
+/**
  * Monta o sistema de arquivos a interpreta seus dados, permitindo que seu conteúdo
  * continue a ser manipulado.
  */
@@ -154,11 +169,9 @@ void mount(cmd_t command) {
   }
 
   if (is_fs_empty()) {
-    cout << "Vazio!" << endl;
     init_empty_fs();
-    // aqui deve ser feito o parsing do sistema de arquivos
   } else {
-    cout << "num é vazio" << endl;
+    parse_fs();
   }
 }
 
@@ -219,31 +232,11 @@ cmd_t prompt_command() {
 }
 
 
-void parse() {
-  int padding = 3000;
-  int fat[MAX_BLOCKS];
-  char bitmap[MAX_BLOCKS];
-  char padded_bitmap[28001];
-
-  fs.file.seekg(ios::beg);
-  fs.file.read((char*) padded_bitmap, 28001);
-
-  for (int i = 0; i < MAX_BLOCKS; i++) {
-    bitmap[i] = padded_bitmap[i];
-  }
-
-  fs.file.seekg(BITMAP_SIZE, ios::beg);
-  fs.file.read((char*) fat, MAX_BLOCKS * sizeof(int));
-}
-
-
 void execute(cmd_t command) {
   if (command.cmd == "mount") {
     mount(command);
   } else if (command.cmd == "unmount") {
     unmount(command);
-  } else if (command.cmd == "parse") {
-    parse();
   }
 }
 
