@@ -1,14 +1,19 @@
+#include <bitset>
 #include <cstring>
 #include <ctime>
+#include <cinttypes>
 #include <iostream>
 #include <fstream>
 #include <string>
 #include <vector>
 
 #define BLOCK_SIZE 4000
-// #define MAX_FS_SIZE 100000000
-#define MAX_FS_SIZE 64000  // teste
+#define MAX_FS_SIZE 100000000
+// #define MAX_FS_SIZE 64000  // teste
 #define MAX_BLOCKS (MAX_FS_SIZE / BLOCK_SIZE)
+#define BITMAP_SIZE 7 * BLOCK_SIZE
+
+#define debug(k, v) cout << k << ": " << v << endl;
 
 using namespace std;
 
@@ -41,8 +46,8 @@ typedef struct {
  */
 typedef struct {
   fstream file;
-  void* fat[MAX_BLOCKS];
-  int bitmap[MAX_BLOCKS];
+  int fat[MAX_BLOCKS];
+  char bitmap[MAX_BLOCKS];
 } filesystem_t;
 
 /**
@@ -73,33 +78,42 @@ void print_cmd(cmd_t command) {
  * OBS: depende de a posição atual corresponder ao final do arquivo.
  */
 bool is_fs_empty() {
-  cout << "pos: " << fs.file.tellg() << endl;
   return fs.file.tellg() <= 0;
 }
 
 
 /**
  * Já que não é possível escrever um bit por vez no arquivo, a gente converte o bitmap
- * na sua representação decimal. Como em geral um inteiro usa 4 bytes para ser representado,
- * são escritos zeros à esquerda do inteiro de modo que ele ocupe o primeiro todo o primeiro
- * block, ie 4kb.
+ * numa sequência gigante de 0's e 1's a serem inseridos de forma sequencial no arquivo.
+ * Observe que sobra espaço no último bloco (3kb precisamente), que são ocupados com
+ * caracteres aleatórios de modo a garantir que todo o espaço do bloco seja ocupado.
  */
 void write_bitmap_to_fs() {
   int padding;
-  string binary;
+  char padded_bitmap[BITMAP_SIZE];
 
-  fs.file.seekp(ios::beg);
-
-  binary = "";
-  padding = BLOCK_SIZE - sizeof(int);
+  padding = BITMAP_SIZE - MAX_BLOCKS;
 
   for (int i = 0; i < MAX_BLOCKS; i++) {
-    binary.append(to_string(fs.bitmap[i]));
+    padded_bitmap[i] = fs.bitmap[i];
   }
   for (int i = 0; i < padding; i++) {
-    fs.file << "0";
+    padded_bitmap[MAX_BLOCKS+i] = '_';
   }
-  fs.file << stoi(binary, 0, 2);
+
+  fs.file.seekp(ios::beg);
+  fs.file.write((char*) padded_bitmap, BITMAP_SIZE);
+}
+
+
+/**
+ * Escreve a tabela FAT no filesystem serializando-a como uma sequência de chars.
+ * Note que o tamanho dela (100kb) é comportado de forma precisa dentro dos blocos
+ * de 4kb utilizados – totalizando 25 blocos.
+ */
+void write_fat_to_fs() {
+  fs.file.seekp(BITMAP_SIZE, ios::beg);
+  fs.file.write((char*) fs.fat, MAX_BLOCKS * sizeof(int));
 }
 
 
@@ -108,13 +122,32 @@ void write_bitmap_to_fs() {
  * um bitmap vazio, uma quase–vazia tabela fat e os metadados do diretório /
  */
 void init_empty_fs() {
-  // marca como 0 os primeiros blocos ocupados do disco – bitmap, fat e metadata de /
+  int k;
+  // marca como 0 os primeiros blocos ocupados do disco – / e seus metadados
   for (int i = 0; i < MAX_BLOCKS; i++) {
-    fs.bitmap[i] = 1;
+    k = (i % 3 == 0) ? 1 : 0;
+    fs.bitmap[i] = k + '0';
+    fs.fat[i] = i * k;
   }
 
   write_bitmap_to_fs();
+  write_fat_to_fs();
   // inicializa o diretório
+}
+
+
+/**
+ * Reads an already initialized filesystem, parsing its bitmap FAT table.
+ */
+void parse_fs() {
+  int fat[MAX_BLOCKS];
+  char bitmap[MAX_BLOCKS];
+
+  fs.file.seekg(ios::beg);
+  fs.file.read((char*) fs.bitmap, MAX_BLOCKS);
+
+  fs.file.seekg(BITMAP_SIZE, ios::beg);
+  fs.file.read((char*) fs.fat, MAX_BLOCKS * sizeof(int));
 }
 
 
@@ -129,7 +162,7 @@ void mount(cmd_t command) {
    */
   fs.file.open(command.args[0], ios::out | ios::app);
   fs.file.close();
-  fs.file.open(command.args[0], ios::in | ios::out | ios::ate);
+  fs.file.open(command.args[0], ios::in | ios::out | ios::ate | ios::binary);
 
   if (!fs.file.is_open()) {
     cout << "Não foi possível abrir " << command.args[0] << endl;
@@ -137,11 +170,9 @@ void mount(cmd_t command) {
   }
 
   if (is_fs_empty()) {
-    cout << "Vazio!" << endl;
     init_empty_fs();
-    // aqui deve ser feito o parsing do sistema de arquivos
   } else {
-    cout << "num é vazi" << endl;
+    parse_fs();
   }
 }
 
@@ -151,6 +182,7 @@ void mount(cmd_t command) {
  */
 void unmount(cmd_t command) {
   write_bitmap_to_fs();
+  write_fat_to_fs();
   // aqui precisa copiar para o disco a fat atualizada
 
   fs.file.close();
