@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
   string name;
   vector<vfile_t> children;
+  vector<vdir_t> dir_children;
 } vdir_t;
 
 /**
@@ -53,7 +54,7 @@ typedef struct {
   vector<string> args;
 } cmd_t;
 
-
+time_t start;
 filesystem_t fs;
 
 
@@ -156,6 +157,138 @@ void unmount(cmd_t command) {
 }
 
 
+void mkdir (cmd_t command) {
+  vdir_t* diretorio;
+
+  diretorio=malloc(sizeof(vdir_t*));
+
+  diretorio->name =command->argv[0];
+  for(i=1;command->args[i]!=null;i++){
+    diretorio->name+= " ";
+    diretorio->name+= command->args[i];
+  }
+  /*colocar no ARQUIVO */
+
+}
+
+
+void rmdir (cmd_t command) {
+  vdir_t* diretorio;
+
+  /*encontrar o diretorio do command*/
+
+  for(i=0;diretorio->children[i]!=null;i++){
+    cmd_t comando;
+    comando->cmd = "rm ";
+    comando-> args[0] = diretorio->children[i]->name;
+    cout >> "Removendo subarquivo " >> diretorio->children[i]->name >> endl;
+    remove_file(comando);
+  }
+
+  for(i=0; diretorio->dir_children[i]!= null; i++){
+    cmd_t comando;
+    comando->cmd = command->cmd;
+    comando->args[0]= diretorio->dir_children[i]->name;
+    cout >> "Removendo subpasta" >> diretorio->dir_children[i]->name >> endl;
+    rmdir(comando);
+  }
+}
+
+
+void df(){
+  /*estatisticas*/
+}
+
+void find_file (cmd_t command){
+  vdir_t* pasta;
+
+  /*pasta= pasta com o nome command->args[0];*/
+
+  for(vfile_t* procura:pasta->children){
+    if(procura.find(command->args[1])!=-1){
+      cout << procura->name << endl;;
+    }
+  }
+
+  for(vdir_t* subpasta:pasta->dir_children){
+    cmd_t comando;
+    comando->cmd=command->cmd;
+    comando->args[0]=subpasta;
+    comando->args[1]=commands->args[1];
+    find_file(subpasta);
+  }
+
+
+}
+
+
+void print_file (cmd_t command){
+  string line;
+  fstream arquivo;
+  arquivo.open(command->args[0]);
+  if(arquivo.is_open()){
+    while(getline(arquivo, line)){
+      cout << line << endl;
+    }
+    aruivo.close();
+  }
+  else{
+    cout << "Arquivo "<< command->args[0] << " não encontrado\n";
+  }
+  /*abrir arquivo e printar ele*/
+}
+
+
+void touch_file (cmd_t command){
+  vfile_t* arquivo;
+
+  /*procurar arquivo*/
+
+  if(/*achou arquivo na procura*/) time(&arquivo->last_access);
+  else{
+    arquivo=malloc(sizeof(vfile_t));
+    arquivo->name = command->args[0];
+    for(i=1;arquivo->args[i]!=null;i++){
+      arquivo->name+= " ";
+      arquivo->name+= command->args[i];
+    }
+
+    arquivo->size=?
+    time(&arquivo->created)
+  }
+
+}
+
+
+void remove_file (cmd_t command){
+  vfile_t* arquivo;
+  /*encontrar arquivo e remove-lo pasta em que ele está*/
+  free(arquivo);
+}
+
+
+void print_dir (cmd_t command){
+  vdir_t* diretorio;
+
+  /*encontrar diretorio*/
+
+  cout << "Arquivos na pasta " << diretorio->name <<":\n";
+  for(i=0;diretorio->children[i]!=null;i++){
+    cout << diretorio->children[i]->name << endl;
+  }
+
+  cout << endl << "Pastas na pasta " << diretorio->name << ":\n";
+  for(i=0;diretorio->dir_children[i]!=null;i++){
+    cout << diretorio->dir_children[i]->name << endl;
+  }
+
+  if(diretorio->children.empty() && diretorio->dir_children.empty()){
+    cout << "A pasta " << diretorio->name << " está vazia\n";
+  }
+}
+
+
+
 /**
  * Recebe uma string contendo uma linha de comando e retorna uma abstração que separa o
  * comando dos seus respectivos argumentos.
@@ -201,10 +334,43 @@ cmd_t prompt_command() {
 
 
 void execute(cmd_t command) {
+  switch(command.cmd){
+    case "mount":
+      mount(command);
+      break;
+    case "unmount":
+      unmount(command);
+      break;
+    case "cp":
+      cp(command);
+      break;
+    case "mkdir":
+      create_dir(command);
+      break;
+    case "rmdir":
+      delete_dir(command);
+      break;
+    case "cat":
+      print_file(command);
+      break;
+    case "touch":
+      touch_file(command);
+      break;
+    case "rm":
+      remove_file(command);
+      break;
+    case "ls":
+      print_dir(command);
+      break;
+    case "find":
+      find_file(command);
+      break;
+    case "df":
+      df();
+      break;
+  }
   if (command.cmd == "mount") {
-    mount(command);
   } else if (command.cmd == "unmount") {
-    unmount(command);
   }
 }
 
@@ -212,12 +378,14 @@ void execute(cmd_t command) {
 int main() {
   cmd_t command;
 
+  time(&start);
+
   while (1) {
     command = prompt_command();
 
     if (command.cmd == "sai") break;
     execute(command);
   }
-
+  salva_arquivos();
   return 1;
 }
