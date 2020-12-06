@@ -6,13 +6,52 @@
 #include <string>
 #include <vector>
 
+/**
+ * Capacidade máxima do filesystem.
+ */
 #define MAX_FS_SIZE 100000000
+
+/**
+ * Número máximo de blocos presentes no filesystem.
+ */
 #define MAX_BLOCKS (MAX_FS_SIZE / BLOCK_SIZE)
+
+/**
+ * Número de bytes ocupado por um único bloco no filesystem.
+ */
 #define BLOCK_SIZE 4000
+
+/**
+ * Número de bytes ocupados pelo bitmap.
+ */
 #define BITMAP_SIZE (7 * BLOCK_SIZE)
+
+/**
+ * Número de bytes ocupados pela tabela FAT.
+ */
 #define FAT_SIZE (MAX_BLOCKS * sizeof(int))
+
+/**
+ * Posição dentro do FS a partir da qual podem ser escritos arquivos e diretório/
+ */
 #define INITIAL_OFFSET (BITMAP_SIZE + FAT_SIZE + BLOCK_SIZE)
+
+/**
+ * Tamanho máximo que um nome de arquivo pode ter.
+ */
 #define FILENAME_SIZE 124
+
+/**
+ * O tamanho máximo dos metadados de um arquivo.
+ */
+#define CHILD_SIZE 160
+
+/**
+ * O número máximo de arquivos filhos em um diretório.
+ */
+#define MAX_CHILDREN_PER_DIR (BLOCK_SIZE / CHILD_SIZE)
+
+
 
 #define debug(k, v) cout << k << ": " << v << endl;
 
@@ -128,16 +167,29 @@ void write_fat_to_fs() {
 }
 
 
+/**
+ * Escreve os metadados de um diretório na posição dada.
+ */
 void write_dir_to_fs(int position, vdir_t content) {
   fs.file.seekp(position);
 
   for (auto child : content.children) {
-    fs.file.write(child.name.c_str(), FILENAME_SIZE);
     fs.file.write((char*) &child.created, sizeof(time_t));
     fs.file.write((char*) &child.last_access, sizeof(time_t));
     fs.file.write((char*) &child.last_modified, sizeof(time_t));
     fs.file.write(reinterpret_cast<const char *>(&child.size), sizeof(size_t));
     fs.file.write(reinterpret_cast<const char *>(&child.head), sizeof(int));
+    fs.file.write(child.name.c_str(), FILENAME_SIZE);
+  }
+
+  /**
+   * Um metadado de controle, com created nulo, é adicionado após o último filho
+   * escrito no bloco, de modo a registrar o "fim" da lista de filhos. Isso não é
+   * necessário quando um diretório possui o número máximo de filhos possível.
+   */
+  if (content.children.size() != MAX_CHILDREN_PER_DIR) {
+    time_t null_time = NULL;
+    fs.file.write((char*) &null_time, sizeof(time_t));
   }
 }
 
@@ -158,12 +210,12 @@ void initialize_empty_root() {
   /**
    * Define os atributos do diretório '/'
    */
-  root_attrs.name = "/";
   root_attrs.created = now;
   root_attrs.last_access = now;
   root_attrs.last_modified = now;
   root_attrs.size = -1;
   root_attrs.head = root_pos + 1;
+  root_attrs.name = "/";
 
   /**
    * Adiciona '/' como filho do pseudo-diretório inicial.
@@ -328,7 +380,7 @@ void unmount(cmd_t command) {
 // }
 
 
-void touch(cmd_t command){
+void touch(cmd_t command) {
   // vfile_t* arquivo;
 
   // /*procurar arquivo*/
@@ -425,26 +477,35 @@ void hook(cmd_t command) {
   char name[FILENAME_SIZE];
   int block = stoi(command.args[0]);
   int pos = block * BLOCK_SIZE;
+  int children = 0;
 
   printf("\nhooking into #%d (byte %d)...\n", block, pos);
   printf("bitmap: %c – fat: %d\n", fs.bitmap[block], fs.fat[block]);
 
   fs.file.seekg(pos);
 
-  fs.file.read(name, FILENAME_SIZE);
-  fs.file.read((char*) &attrs.created, sizeof(time_t));
-  fs.file.read((char*) &attrs.last_access, sizeof(time_t));
-  fs.file.read((char*) &attrs.last_modified, sizeof(time_t));
-  fs.file.read(reinterpret_cast<char*>(&attrs.size), sizeof(size_t));
-  fs.file.read(reinterpret_cast<char*>(&attrs.head), sizeof(int));
+  do {
+    fs.file.read((char*) &attrs.created, sizeof(time_t));
+    fs.file.read((char*) &attrs.last_access, sizeof(time_t));
+    fs.file.read((char*) &attrs.last_modified, sizeof(time_t));
+    fs.file.read(reinterpret_cast<char*>(&attrs.size), sizeof(size_t));
+    fs.file.read(reinterpret_cast<char*>(&attrs.head), sizeof(int));
+    fs.file.read(name, FILENAME_SIZE);
+    attrs.name = name;
 
-  attrs.name = name;
+    if (attrs.created == NULL) break;
+    children++;
 
-  printf("------------------\n");
-  printf("|> #%d %s (%zu bytes)\n", attrs.head, attrs.name.c_str(), attrs.size);
-  printf("|> create: %ld\n", attrs.created);
-  printf("|> access: %ld\n", attrs.last_access);
-  printf("|> modify: %ld\n", attrs.last_modified);
+    printf("------------------\n");
+    printf("|> #%d %s (%zu bytes)\n", attrs.head, attrs.name.c_str(), attrs.size);
+    printf("|> create: %ld\n", attrs.created);
+    printf("|> access: %ld\n", attrs.last_access);
+    printf("|> modify: %ld\n", attrs.last_modified);
+    printf("|> null? %d\n", (attrs.created == NULL));
+    printf("|> dir? %d\n", (attrs.size == -1));
+  } while (children < MAX_CHILDREN_PER_DIR);
+
+  printf("\n[ %d children read ]\n", children);
 }
 
 
