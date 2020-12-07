@@ -1,28 +1,82 @@
-#include <bitset>
 #include <cstring>
 #include <ctime>
-#include <cinttypes>
 #include <iostream>
 #include <fstream>
 #include <string>
 #include <vector>
 
-#define BLOCK_SIZE 4000
+/**
+ * Capacidade máxima do filesystem.
+ */
 #define MAX_FS_SIZE 100000000
-// #define MAX_FS_SIZE 64000  // teste
-#define MAX_BLOCKS (MAX_FS_SIZE / BLOCK_SIZE)
-#define BITMAP_SIZE 7 * BLOCK_SIZE
 
-#define debug(k, v) cout << k << ": " << v << endl;
+/**
+ * Número máximo de blocos presentes no filesystem.
+ */
+#define MAX_BLOCKS (MAX_FS_SIZE / BLOCK_SIZE)
+
+/**
+ * Número de bytes ocupado por um único bloco no filesystem.
+ */
+#define BLOCK_SIZE 4000
+
+/**
+ * Número de blocos ocupados pelo bitmap.
+ */
+#define BITMAP_SIZE 7
+
+/**
+ * Número de blocos ocupados pela tabela FAT.
+ */
+#define FAT_SIZE 32
+
+/**
+ * Representa o primeiro bloco disponível para uso no sistema.
+ */
+#define INITIAL_BLOCK (BITMAP_SIZE + FAT_SIZE)
+
+/**
+ * Tamanho máximo que um nome de arquivo pode ter.
+ */
+#define NAME_SIZE 119
+
+/**
+ * O tamanho máximo dos metadados de um arquivo.
+ */
+#define CHILD_SIZE 160
+
+/**
+ * O número máximo de arquivos filhos em um diretório.
+ */
+#define MAX_CHILDREN_PER_DIR (BLOCK_SIZE / CHILD_SIZE)
+
 
 using namespace std;
+
+#define debug(k, v) cerr << k << ": " << v << endl;
+#define fail(msg) cerr << "=> ERRO: " << msg << endl;
+
 
 /**
  * Representa os metadados de um único arquivo dentro do sistema de arquivos.
  * Note que, apesar de não haver um limite explícito para o tamanho de `name`,
  * consideremos como 255 caracters tal limite.
  */
+
+
+ typedef struct {
+   string name;
+   time_t created;
+   time_t last_access;
+   time_t last_modified;
+   size_t size;
+   int is_dir;
+   int head;
+ } vattr_t;
+
+
 typedef struct {
+  int head;
   string name;
   size_t size;
   time_t created;
@@ -33,10 +87,16 @@ typedef struct {
 /**
  * Representa um diretório dentro do sistema de arquivos.
  */
-typedef struct {
+typedef struct vdir_t{
+  int head;
   string name;
-  vector<vfile_t> children;
-  vector<vdir_t> dir_children;
+  time_t created;
+  time_t last_access;
+  time_t last_modified;
+  vector<vfile_t> file_children;
+  vector<struct vdir_t*> dir_children;
+  struct vdir_t* dir_father;
+  vector<vattr_t> children;
 } vdir_t;
 
 /**
@@ -44,11 +104,12 @@ typedef struct {
  * o bitmap representando os blocos livres/usados e o arquivo no sistema físico
  * onde nossa abstração vai ser armazenada.
  */
-typedef struct {
-  fstream file;
-  int fat[MAX_BLOCKS];
-  char bitmap[MAX_BLOCKS];
-} filesystem_t;
+ typedef struct {
+   fstream file;
+   int fat[MAX_BLOCKS];
+   int bitmap[MAX_BLOCKS];
+   string blocks[MAX_BLOCKS];
+ } filesystem_t;
 
 /**
  * Abstrai um comando para o sistema de arquivo, separando comando built-in
@@ -59,7 +120,8 @@ typedef struct {
   vector<string> args;
 } cmd_t;
 
-time_t start;
+
+vdir_t* root;
 filesystem_t fs;
 
 
@@ -78,42 +140,202 @@ void print_cmd(cmd_t command) {
  * OBS: depende de a posição atual corresponder ao final do arquivo.
  */
 bool is_fs_empty() {
+  cout << "pos: " << fs.file.tellg() << endl;
   return fs.file.tellg() <= 0;
 }
 
 
 /**
- * Já que não é possível escrever um bit por vez no arquivo, a gente converte o bitmap
- * numa sequência gigante de 0's e 1's a serem inseridos de forma sequencial no arquivo.
- * Observe que sobra espaço no último bloco (3kb precisamente), que são ocupados com
- * caracteres aleatórios de modo a garantir que todo o espaço do bloco seja ocupado.
+ * Inicializa o bitmap dentro do blocos que o armazenariam no filesystem simulado. Isso torna
+ * mais fácil a posterior serialização desses dados para o arquivo real.
  */
-void write_bitmap_to_fs() {
-  int padding;
-  char padded_bitmap[BITMAP_SIZE];
+void write_bitmap_to_blocks() {
+  int i, j, k;
+  string serialized;
 
-  padding = BITMAP_SIZE - MAX_BLOCKS;
+  i = j = k = 0;
+  serialized = "";
 
-  for (int i = 0; i < MAX_BLOCKS; i++) {
-    padded_bitmap[i] = fs.bitmap[i];
+  while (i < MAX_BLOCKS) {
+    if (j == BLOCK_SIZE) {
+      fs.blocks[k] = serialized;
+      serialized = "";
+      j = 0;
+      k++;
+    }
+    serialized.append(to_string(fs.bitmap[i]));
+    i++;
+    j++;
   }
-  for (int i = 0; i < padding; i++) {
-    padded_bitmap[MAX_BLOCKS+i] = '_';
-  }
 
-  fs.file.seekp(ios::beg);
-  fs.file.write((char*) padded_bitmap, BITMAP_SIZE);
+  /**
+   * Completa o bloco restante com um caracter arbitrário até que atinja BLOCK_SIZE bytes.
+   */
+  for (j = j; j < BLOCK_SIZE; j++) {
+    serialized.append("@");
+  }
+  fs.blocks[k] = serialized;
 }
 
 
 /**
- * Escreve a tabela FAT no filesystem serializando-a como uma sequência de chars.
- * Note que o tamanho dela (100kb) é comportado de forma precisa dentro dos blocos
- * de 4kb utilizados – totalizando 25 blocos.
+ * Inicializa a tabela FAT dentro do blocos que o armazenariam no filesystem simulado.
+ * Isso torna mais fácil a posterior serialização desses dados para o arquivo real.
  */
-void write_fat_to_fs() {
-  fs.file.seekp(BITMAP_SIZE, ios::beg);
-  fs.file.write((char*) fs.fat, MAX_BLOCKS * sizeof(int));
+void write_fat_to_blocks() {
+  int i, j, k;
+  char number_repr[6];
+  string serialized;
+
+  i = j = 0;
+  k = BITMAP_SIZE;
+
+  /**
+   * Aqui opta-se por serializar todos os endereços com largura fixa de 5 caracteres. Isso
+   * facilita durante o parsing.
+   */
+  while (i < MAX_BLOCKS) {
+    if (j == BLOCK_SIZE) {
+      fs.blocks[k] = serialized;
+      serialized = "";
+      j = 0;
+      k++;
+    }
+    sprintf(number_repr, "%05d", fs.fat[i]);
+    serialized.append(string(number_repr));
+    i++;
+    j += 5;
+  }
+
+  /**
+   * Completa o bloco restante com um caracter arbitrário até que atinja BLOCK_SIZE bytes.
+   */
+  for (j = j; j < BLOCK_SIZE; j++) {
+    serialized.append("@");
+  }
+  fs.blocks[k] = serialized;
+}
+
+
+/**
+ * Serializa os blocos dentro do arquivo real que representa o filesystem.
+ */
+void write_blocks_to_fs() {
+  fs.file.seekp(ios::beg);
+
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    fs.file << fs.blocks[i];
+  }
+}
+
+
+/**
+ * Busca linearmente em todo o filesystem pelo primeiro block vazio disponível.
+ * @throw quando não há espaço disponível.
+ */
+int find_empty_block() {
+  for (int i = INITIAL_BLOCK; i < MAX_BLOCKS; i++) {
+    if (fs.bitmap[i] == '1') {
+      return i;
+    }
+  }
+  throw "Não há espaço disponível em disco!";
+}
+
+
+/**
+ * Inicializa um diretório vazio a partir do primeiro bloco disponível.
+ */
+vdir_t new_dir(string name) {
+  vdir_t dir;
+  time_t now;
+  int head_block;
+
+  now = time(nullptr);
+  head_block = find_empty_block();
+
+  dir.created = now;
+  dir.last_access = now;
+  dir.last_modified = now;
+  dir.name = name;
+  dir.head = head_block;
+
+  /**
+   * Marca como usado, no filesystem, o espaço do arquivo recém-criado.
+   */
+  fs.bitmap[head_block] = 0;
+  fs.fat[head_block] = -1;
+
+  return dir;
+}
+
+
+void update_dir_block(int position, vdir_t dir) {
+  string new_block;
+  char size[9];
+  char head[6];
+  char name[NAME_SIZE];
+
+  fs.file.seekp(position, ios::beg);
+
+  debug("block", position / BLOCK_SIZE);
+  debug("will write children", dir.children.size());
+
+  new_block = "";
+  for (auto child : dir.children) {
+    sprintf(size, "%08zu", child.size);
+    sprintf(head, "%05d", child.head);
+    strcpy(name, child.name.c_str());
+
+    debug("escrevendo", child.name);
+    new_block.append(to_string(child.created));
+    new_block.append(to_string(child.last_access));
+    new_block.append(to_string(child.last_modified));
+    new_block.append(child.is_dir ? "1" : "0");
+    new_block.append(head);
+    new_block.append(size);
+    new_block.append(name);
+  }
+
+  /**
+   * Um metadado de controle, com created nulo, é adicionado após o último filho
+   * escrito no bloco, de modo a registrar o "fim" da lista de filhos. Isso não é
+   * necessário quando um diretório possui o número máximo de filhos possível.
+   */
+  if (dir.children.size() != MAX_CHILDREN_PER_DIR) {
+    new_block.append("000000000");
+  }
+
+  fs.bitmap[position] = 0;
+  fs.fat[position] = -1;
+  fs.blocks[position] = new_block;
+}
+
+
+void init_root_dir() {
+  vdir_t root_dir, root_dir_parent;
+  vattr_t root_attrs;
+  time_t now;
+  int root_pos;
+
+  now = time(nullptr);
+  root_pos = INITIAL_BLOCK;
+
+  root_attrs.created = now;
+  root_attrs.last_access = now;
+  root_attrs.last_modified = now;
+  root_attrs.size = 0;
+  root_attrs.head = root_pos + 1;
+  root_attrs.is_dir = 1;
+  root_attrs.name = "/";
+
+  /**
+   * Adiciona '/' como filho do pseudo-diretório inicial.
+   */
+  root_dir_parent.children.push_back(root_attrs);
+
+  update_dir_block(root_pos, root_dir_parent);
+  update_dir_block(root_pos+1, root_dir);
 }
 
 
@@ -122,32 +344,47 @@ void write_fat_to_fs() {
  * um bitmap vazio, uma quase–vazia tabela fat e os metadados do diretório /
  */
 void init_empty_fs() {
-  int k;
-  // marca como 0 os primeiros blocos ocupados do disco – / e seus metadados
   for (int i = 0; i < MAX_BLOCKS; i++) {
-    k = (i % 3 == 0) ? 1 : 0;
-    fs.bitmap[i] = k + '0';
-    fs.fat[i] = i * k;
+    fs.bitmap[i] = 1;
+    fs.fat[i] = i;
+    fs.blocks[i] = "";
   }
 
-  write_bitmap_to_fs();
-  write_fat_to_fs();
-  // inicializa o diretório
+  write_bitmap_to_blocks();
+  write_fat_to_blocks();
+  init_root_dir();
 }
 
 
 /**
- * Reads an already initialized filesystem, parsing its bitmap FAT table.
+ * Interpreta um filesystem já existente, colocando em memória o seu conteúdo.
  */
 void parse_fs() {
-  int fat[MAX_BLOCKS];
-  char bitmap[MAX_BLOCKS];
+  char bit;
+  char serialized[6];
+  char block[BLOCK_SIZE + 1];
 
   fs.file.seekg(ios::beg);
-  fs.file.read((char*) fs.bitmap, MAX_BLOCKS);
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    bit = fs.file.get();
+    fs.bitmap[i] = (int) bit-'0';
+  }
 
-  fs.file.seekg(BITMAP_SIZE, ios::beg);
-  fs.file.read((char*) fs.fat, MAX_BLOCKS * sizeof(int));
+  fs.file.seekg(BITMAP_SIZE * BLOCK_SIZE, ios::beg);
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    fs.file.get(serialized, 6);
+    fs.fat[i] = stoi(serialized);
+  }
+
+  /**
+   * Volta ao início do arquivo para ler todos os blocos, inclusive, aqueles
+   * pertencentes ao bitmap e à tabela FAT.
+   */
+  fs.file.seekg(ios::beg);
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    fs.file.get(block, BLOCK_SIZE+1);
+    fs.blocks[i] = string(block);
+  }
 }
 
 
@@ -162,7 +399,7 @@ void mount(cmd_t command) {
    */
   fs.file.open(command.args[0], ios::out | ios::app);
   fs.file.close();
-  fs.file.open(command.args[0], ios::in | ios::out | ios::ate | ios::binary);
+  fs.file.open(command.args[0], ios::in | ios::out | ios::ate);
 
   if (!fs.file.is_open()) {
     cout << "Não foi possível abrir " << command.args[0] << endl;
@@ -181,49 +418,271 @@ void mount(cmd_t command) {
  * Salva o estado atual do sistema de arquivos, fechando-o.
  */
 void unmount(cmd_t command) {
-  write_bitmap_to_fs();
-  write_fat_to_fs();
-  // aqui precisa copiar para o disco a fat atualizada
-
+  write_blocks_to_fs();
   fs.file.close();
 }
 
 
-void mkdir (cmd_t command) {
-  vdir_t* diretorio;
+void cp (cmd_t command){
+  fstream file;
+  vfile_t arq;
+  vattr_t copy;
+  vdir_t* dir;
+  string aux, arquivo="", pai;
+  int i, pos, count;
 
-  diretorio=malloc(sizeof(vdir_t*));
-
-  diretorio->name =command->argv[0];
-  for(i=1;command->args[i]!=null;i++){
-    diretorio->name+= " ";
-    diretorio->name+= command->args[i];
+  /*dir é o diretorio aonde o arquivo vai ser guardado e arquivo é o nome do arquivo.*/
+  dir= root;
+  aux=command.args[1];
+  for(i=1; i<aux.size(); i++){
+    if(aux[i]=='/'){
+      pai = arquivo;
+      arquivo.clear();
+      for(vdir_t* procura : dir->dir_children){
+        if(procura->name==pai){
+          dir = procura;
+          break;
+        }
+      }
+    }else{
+      arquivo+=aux[i];
+    }
   }
-  /*colocar no ARQUIVO */
+
+  arq.name = arquivo;
+  for(i=0; i<MAX_BLOCKS; i++){
+    if(fs.bitmap[i]==1){
+      arq.head = i;
+      fs.bitmap[i]=0;
+      pos = i;
+      fs.blocks[i].clear();
+      break;
+    }
+  }
+  if(i == MAX_BLOCKS){
+    cout << "A memória do computador está cheia, logo não será possível gravar " << command.args[1] << endl;
+    return;
+  }
+
+  file.open(command.args[0], std::fstream::in);
+  if(file.is_open()){
+    char c;
+    count = 0;
+    while(file.get(c)){
+      if(fs.blocks[pos].size()<BLOCK_SIZE){
+        fs.blocks[pos].push_back(c);
+      }else{
+        for(i=pos;i<MAX_BLOCKS; i++){
+          if(fs.bitmap[i]==1){
+            fs.fat[pos]= i;
+            fs.bitmap[i]=0;
+            pos=i;
+            fs.blocks[i].clear();
+            break;
+          }
+        }
+        if(i == MAX_BLOCKS){
+          cout << "A memória do computador está cheia, logo não será possível gravar " << command.args[1] << endl;
+          int libera= arq.head;
+          while(libera!=pos){
+            fs.bitmap[i]=1;
+            libera=fs.fat[libera];
+          }
+          return;
+        }
+      }
+      count ++;
+    }
+    fs.fat[pos]=-1;
+    file.close();
+  }else{
+    cout << "Não foi possível abrir o arquivo " << command.args[0]<< endl;
+    return;
+  }
+
+  time(&arq.created);
+  arq.last_access=arq.created;
+  arq.last_modified=arq.created;
+  arq.size = count;
+
+
+  copy.name = arq.name;
+  copy.created = arq.created;
+  copy.last_access = arq.last_access;
+  copy.last_modified = arq.last_modified;
+  copy.size = arq.size;
+  copy.head = arq.head;
+  copy.is_dir = 0;
+
+  dir->file_children.push_back(arq);
+  dir->children.push_back(copy);
+}
+
+
+void create_dir (cmd_t command) {
+  vdir_t* diretorio, *dir_pai;
+  string aux, name="", pai="";
+  int i;
+
+  dir_pai = root;
+  diretorio=(vdir_t*)malloc(sizeof(vdir_t));
+  aux=command.args[0];
+
+  /*Coloca o diretorio no seu diretório pai. Por exemplo, mkdir /pasta1/pasta2
+   *cria a pasta2 dentro de pasta1.
+   */
+
+  for(i=1; i<aux.size(); i++){
+    if(aux[i]=='/'){
+      pai = name;
+      name.clear();
+      for(vdir_t* procura : dir_pai->dir_children){
+        if(procura->name==pai){
+          dir_pai = procura;
+          break;
+        }
+      }
+    }else{
+      name+=aux[i];
+    }
+  }
+
+  diretorio->name = name;
+  for(i=0; i<MAX_BLOCKS; i++){
+    if(fs.bitmap[i]==1){
+      fs.fat[i]=-1;
+      diretorio->head = i;
+      fs.bitmap[i]=0;
+      break;
+    }
+  }
+  time(&diretorio->created);
+  diretorio->last_access=diretorio->created;
+  diretorio->last_modified=diretorio->created;
+
+  update_dir_block(diretorio->head, *diretorio);
+
+  dir_pai->dir_children.push_back(diretorio);
+  diretorio->dir_father = dir_pai;
+
 
 }
 
 
-void rmdir (cmd_t command) {
-  vdir_t* diretorio;
+vdir_t* achar_pasta (string pasta, vdir_t* diretorio){
+  if(diretorio->dir_children.empty()){
+    return nullptr;
+  }
+  for(vdir_t* procura:diretorio->dir_children){
+    if(procura->name == pasta){
+      return procura;
+    }
+  }
+  for(vdir_t* procura:diretorio->dir_children){
+    vdir_t* novo;
+    novo =achar_pasta(pasta, procura);
+    if(novo != nullptr){
+      return novo;
+    }
+  }
+  return nullptr;
+}
 
-  /*encontrar o diretorio do command*/
 
-  for(i=0;diretorio->children[i]!=null;i++){
-    cmd_t comando;
-    comando->cmd = "rm ";
-    comando-> args[0] = diretorio->children[i]->name;
-    cout >> "Removendo subarquivo " >> diretorio->children[i]->name >> endl;
-    remove_file(comando);
+vdir_t* achar_arquivo_2(string arquivo, vdir_t* diretorio){
+  if(diretorio->file_children.empty()){
+    return nullptr;
+  }
+  for(vfile_t procura:diretorio->file_children){
+    if(procura.name == arquivo){
+      return diretorio;
+    }
+  }
+  for(vdir_t* procura:diretorio->dir_children){
+    vdir_t* novo;
+    novo = achar_arquivo_2(arquivo, procura);
+    if(novo != nullptr){
+      return novo;
+    }
+  }
+  return nullptr;
+}
+
+
+void remove_file (cmd_t command){
+  vfile_t* arquivo;
+  vdir_t* dir;
+  int i;
+  dir= root;
+
+
+  dir=achar_arquivo_2(command.args[0], root);
+  i=0;
+  for(vfile_t procura : dir->file_children){
+    i++;
+    if(procura.name == command.args[0]){
+      arquivo = &procura;
+      dir->file_children.erase(dir->file_children.begin()+i);
+      break;
+    }
+  }
+  i = arquivo->head;
+  while(i!=-1){
+    fs.bitmap[i]=1;
+    i = fs.fat[i];
   }
 
-  for(i=0; diretorio->dir_children[i]!= null; i++){
-    cmd_t comando;
-    comando->cmd = command->cmd;
-    comando->args[0]= diretorio->dir_children[i]->name;
-    cout >> "Removendo subpasta" >> diretorio->dir_children[i]->name >> endl;
-    rmdir(comando);
+  free(arquivo);
+}
+
+
+void delete_dir (cmd_t command) {
+  vdir_t* diretorio, *dir_pai;
+  string dir;
+  int i;
+
+  dir = "";
+  for(i=1; i<command.args[0].size();i++){
+    dir+=command.args[0][i];
   }
+  diretorio = achar_pasta(dir , root);
+  if(diretorio == nullptr){
+    cout << "Não existe o diretório " << dir << endl;
+    return;
+  }
+  if(!diretorio->file_children.empty()){
+    for(vfile_t procura:diretorio->file_children){
+      cmd_t comando;
+      comando.cmd = "rm ";
+      comando.args[0] = procura.name;
+      cout << "Removendo subarquivo " << procura.name << endl;
+      remove_file(comando);
+    }
+  }
+  if(!diretorio->dir_children.empty()){
+    for(vdir_t* procura:diretorio->dir_children){
+      cmd_t comando;
+      comando.cmd = command.cmd;
+      comando.args[0]= procura->name;
+      cout << "Removendo subpasta" << procura->name << endl;
+      delete_dir(comando);
+    }
+  }
+  dir_pai=diretorio->dir_father;
+  i=0;
+  for(vdir_t* procura:dir_pai->dir_children){
+    if(procura->name == dir){
+      dir_pai->dir_children.erase(diretorio->dir_father->dir_children.begin()+i);
+    }
+    i++;
+  }
+  i = diretorio->head;
+  while(i!=-1){
+    fs.bitmap[i]=1;
+    i = fs.fat[i];
+  }
+
+  free(diretorio);
 }
 
 
@@ -231,23 +690,26 @@ void df(){
   /*estatisticas*/
 }
 
+
 void find_file (cmd_t command){
   vdir_t* pasta;
 
-  /*pasta= pasta com o nome command->args[0];*/
+  pasta= achar_pasta(command.args[0], root);
 
-  for(vfile_t* procura:pasta->children){
-    if(procura.find(command->args[1])!=-1){
-      cout << procura->name << endl;;
+  for(vfile_t procura:pasta->file_children){
+    if(procura.name.find(command.args[1])!=-1){
+      cout << procura.name << endl;;
     }
   }
 
   for(vdir_t* subpasta:pasta->dir_children){
     cmd_t comando;
-    comando->cmd=command->cmd;
-    comando->args[0]=subpasta;
-    comando->args[1]=commands->args[1];
-    find_file(subpasta);
+    int i;
+    comando.cmd=command.cmd;
+    for(string procura : command.args){
+      comando.args[i] = procura;
+    }
+    find_file(comando);
   }
 
 
@@ -257,66 +719,96 @@ void find_file (cmd_t command){
 void print_file (cmd_t command){
   string line;
   fstream arquivo;
-  arquivo.open(command->args[0]);
+  arquivo.open(command.args[0]);
   if(arquivo.is_open()){
     while(getline(arquivo, line)){
       cout << line << endl;
     }
-    aruivo.close();
+    arquivo.close();
   }
   else{
-    cout << "Arquivo "<< command->args[0] << " não encontrado\n";
+    cout << "Arquivo "<< command.args[0] << " não encontrado\n";
   }
-  /*abrir arquivo e printar ele*/
+}
+
+
+vfile_t* achar_arquivo(string arquivo, vdir_t* diretorio){
+  int i=0;
+  if(diretorio->file_children.empty()){
+    return nullptr;
+  }
+  for(vfile_t procura:diretorio->file_children){
+    if(procura.name == arquivo){
+
+      return &diretorio->file_children[i];
+    }
+    i++;
+  }
+  for(vdir_t* procura:diretorio->dir_children){
+    vfile_t* novo;
+    novo =achar_arquivo(arquivo, procura);
+    if(novo != nullptr){
+      return novo;
+    }
+  }
+  return nullptr;
 }
 
 
 void touch_file (cmd_t command){
   vfile_t* arquivo;
 
-  /*procurar arquivo*/
+  arquivo = achar_arquivo(command.args[0], root);
 
-  if(/*achou arquivo na procura*/) time(&arquivo->last_access);
+  if(arquivo!=nullptr){
+    time(&arquivo->last_access);
+  }
   else{
-    arquivo=malloc(sizeof(vfile_t));
-    arquivo->name = command->args[0];
-    for(i=1;arquivo->args[i]!=null;i++){
+    arquivo=(vfile_t*)malloc(sizeof(vfile_t));
+    arquivo->name = "";
+    for(string escreve:command.args){
+      arquivo->name+= escreve;
       arquivo->name+= " ";
-      arquivo->name+= command->args[i];
     }
+    arquivo->name.pop_back();
 
-    arquivo->size=?
-    time(&arquivo->created)
+    arquivo->size=0;
+    time(&arquivo->created);
   }
 
-}
-
-
-void remove_file (cmd_t command){
-  vfile_t* arquivo;
-  /*encontrar arquivo e remove-lo pasta em que ele está*/
-  free(arquivo);
 }
 
 
 void print_dir (cmd_t command){
   vdir_t* diretorio;
+  int i;
 
-  /*encontrar diretorio*/
+  achar_pasta(command.args[0], root);
+
+  if(diretorio->file_children.empty() && diretorio->dir_children.empty()){
+    cout << "A pasta " << diretorio->name << " está vazia\n";
+    return;
+  }
 
   cout << "Arquivos na pasta " << diretorio->name <<":\n";
-  for(i=0;diretorio->children[i]!=null;i++){
-    cout << diretorio->children[i]->name << endl;
+  for(vfile_t procura:diretorio->file_children){
+    cout << procura.name << endl;
   }
 
   cout << endl << "Pastas na pasta " << diretorio->name << ":\n";
-  for(i=0;diretorio->dir_children[i]!=null;i++){
+  for(vdir_t* procura:diretorio->dir_children){
     cout << diretorio->dir_children[i]->name << endl;
   }
 
-  if(diretorio->children.empty() && diretorio->dir_children.empty()){
-    cout << "A pasta " << diretorio->name << " está vazia\n";
-  }
+}
+
+
+void hook(cmd_t command) {
+  int pos = stoi(command.args[0]);
+
+  printf("--------- #%d\n", pos);
+  printf("bitmap: %d\n", fs.bitmap[pos]);
+  printf("fat: %d\n", fs.fat[pos]);
 }
 
 
@@ -366,43 +858,34 @@ cmd_t prompt_command() {
 
 
 void execute(cmd_t command) {
-  switch(command.cmd){
-    case "mount":
+  try{
+    if(command.cmd == "mount"){
       mount(command);
-      break;
-    case "unmount":
+    }else if(command.cmd == "unmount"){
       unmount(command);
-      break;
-    case "cp":
+    }else if(command.cmd == "cp"){
       cp(command);
-      break;
-    case "mkdir":
+    }else if(command.cmd == "mkdir"){
       create_dir(command);
-      break;
-    case "rmdir":
+    }else if(command.cmd == "rmdir"){
       delete_dir(command);
-      break;
-    case "cat":
+    }else if(command.cmd == "cat"){
       print_file(command);
-      break;
-    case "touch":
+    }else if(command.cmd == "touch"){
       touch_file(command);
-      break;
-    case "rm":
+    }else if(command.cmd == "rm"){
       remove_file(command);
-      break;
-    case "ls":
+    }else if(command.cmd == "ls"){
       print_dir(command);
-      break;
-    case "find":
+    }else if(command.cmd == "find"){
       find_file(command);
-      break;
-    case "df":
+    }else if(command.cmd == "df"){
       df();
-      break;
-  }
-  if (command.cmd == "mount") {
-  } else if (command.cmd == "unmount") {
+    }else if (command.cmd == "hook") {
+      hook(command);
+    }
+  }catch (const char* msg) {
+    fail(msg);
   }
 }
 
@@ -410,14 +893,11 @@ void execute(cmd_t command) {
 int main() {
   cmd_t command;
 
-  time(&start);
-
   while (1) {
     command = prompt_command();
 
     if (command.cmd == "sai") break;
     execute(command);
   }
-  salva_arquivos();
   return 1;
 }
