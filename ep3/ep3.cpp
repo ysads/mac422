@@ -122,22 +122,11 @@ time_t start;
 filesystem_t fs;
 
 
-void print_cmd(cmd_t command) {
-  cout << endl << "cmd> " <<  command.cmd << endl;
-
-  for (auto it = command.args.begin(); it != command.args.end(); it++) {
-    cout << "> " << *it << endl;
-  }
-  cout << endl;
-}
-
-
 /**
  * Diz se o arquivo lido está vazio comparando o número de bytes da atual posição.
  * OBS: depende de a posição atual corresponder ao final do arquivo.
  */
 bool is_fs_empty() {
-  cout << "pos: " << fs.file.tellg() << endl;
   return fs.file.tellg() <= 0;
 }
 
@@ -267,6 +256,10 @@ vdir_t new_dir(string name) {
 }
 
 
+/**
+ * Atualiza um bloco de diretório dentro do filesystem, reescrevendo seu
+ * conteúdo de acordo com a struct recebida como argumento.
+ */
 void update_dir_block(int position, vdir_t dir) {
   string new_block;
   char size[9];
@@ -343,7 +336,7 @@ void init_root_dir() {
 void init_empty_fs() {
   for (int i = 0; i < MAX_BLOCKS; i++) {
     fs.bitmap[i] = 1;
-    fs.fat[i] = i;
+    fs.fat[i] = -1;
     fs.blocks[i] = "";
   }
 
@@ -550,15 +543,6 @@ void unmount(cmd_t command) {
 //   }
 // }
 
-void hook(cmd_t command) {
-  int pos = stoi(command.args[0]);
-
-  printf("--------- #%d\n", pos);
-  printf("bitmap: %d\n", fs.bitmap[pos]);
-  printf("fat: %d\n", fs.fat[pos]);
-}
-
-
 /**
  * Recebe uma string contendo uma linha de comando e retorna uma abstração que separa o
  * comando dos seus respectivos argumentos.
@@ -609,8 +593,6 @@ void execute(cmd_t command) {
       mount(command);
     } else if (command.cmd == "unmount") {
       unmount(command);
-    } else if (command.cmd == "hook") {
-      hook(command);
     }
   } catch (const char* msg) {
     fail(msg);
@@ -622,7 +604,6 @@ int main() {
   cmd_t command;
 
   time(&start);
-  debug("size", to_string(start).length());
 
   while (1) {
     command = prompt_command();
