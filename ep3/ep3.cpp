@@ -179,6 +179,7 @@ void write_fat_to_blocks() {
   fs.blocks[k] = serialized;
 }
 
+
 /**
  * Serializa os blocos dentro do arquivo real que representa o filesystem.
  */
@@ -208,6 +209,38 @@ void init_empty_fs() {
 
 
 /**
+ * Interpreta um filesystem já existente, colocando em memória o seu conteúdo.
+ */
+void parse_fs() {
+  char bit;
+  char serialized[6];
+  char block[BLOCK_SIZE + 1];
+
+  fs.file.seekg(ios::beg);
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    bit = fs.file.get();
+    fs.bitmap[i] = (int) bit-'0';
+  }
+
+  fs.file.seekg(BITMAP_SIZE * BLOCK_SIZE, ios::beg);
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    fs.file.get(serialized, 6);
+    fs.fat[i] = stoi(serialized);
+  }
+
+  /**
+   * Volta ao início do arquivo para ler todos os blocos, inclusive, aqueles
+   * pertencentes ao bitmap e à tabela FAT.
+   */
+  fs.file.seekg(ios::beg);
+  for (int i = 0; i < MAX_BLOCKS; i++) {
+    fs.file.get(block, BLOCK_SIZE+1);
+    fs.blocks[i] = string(block);
+  }
+}
+
+
+/**
  * Monta o sistema de arquivos a interpreta seus dados, permitindo que seu conteúdo
  * continue a ser manipulado.
  */
@@ -226,10 +259,9 @@ void mount(cmd_t command) {
   }
 
   if (is_fs_empty()) {
-    cout << "Vazio!" << endl;
     init_empty_fs();
   } else {
-    cout << "num é vazio" << endl;
+    parse_fs();
   }
 }
 
@@ -373,6 +405,13 @@ void unmount(cmd_t command) {
 //   }
 // }
 
+void hook(cmd_t command) {
+  int pos = stoi(command.args[0]);
+
+  printf("--------- #%d\n", pos);
+  printf("bitmap: %d\n", fs.bitmap[pos]);
+  printf("fat: %d\n", fs.fat[pos]);
+}
 
 
 /**
@@ -425,6 +464,8 @@ void execute(cmd_t command) {
       mount(command);
     } else if (command.cmd == "unmount") {
       unmount(command);
+    } else if (command.cmd == "hook") {
+      hook(command);
     }
   } catch (const char* msg) {
     fail(msg);
