@@ -30,11 +30,43 @@
  */
 #define FAT_SIZE 32
 
+/**
+ * Representa o primeiro bloco disponível para uso no sistema.
+ */
+#define INITIAL_BLOCK (BITMAP_SIZE + FAT_SIZE)
+
+/**
+ * Tamanho máximo que um nome de arquivo pode ter.
+ */
+#define NAME_SIZE 119
+
+/**
+ * O tamanho máximo dos metadados de um arquivo.
+ */
+#define CHILD_SIZE 160
+
+/**
+ * O número máximo de arquivos filhos em um diretório.
+ */
+#define MAX_CHILDREN_PER_DIR (BLOCK_SIZE / CHILD_SIZE)
+
 
 using namespace std;
 
 #define debug(k, v) cerr << k << ": " << v << endl;
 #define fail(msg) cerr << "=> ERRO: " << msg << endl;
+
+
+typedef struct {
+  string name;
+  time_t created;
+  time_t last_access;
+  time_t last_modified;
+  size_t size;
+  int is_dir;
+  int head;
+} vattr_t;
+
 
 /**
  * Representa os metadados de um único arquivo dentro do sistema de arquivos.
@@ -53,12 +85,14 @@ typedef struct {
  * Representa um diretório dentro do sistema de arquivos.
  */
 typedef struct vdir {
+  int head;
   string name;
   time_t created;
   time_t last_access;
   time_t last_modified;
   vector<vfile_t> file_children;
   vector<struct vdir> dir_children;
+  vector<vattr_t> children;
 } vdir_t;
 
 /**
@@ -193,6 +227,116 @@ void write_blocks_to_fs() {
 
 
 /**
+ * Busca linearmente em todo o filesystem pelo primeiro block vazio disponível.
+ * @throw quando não há espaço disponível.
+ */
+int find_empty_block() {
+  for (int i = INITIAL_BLOCK; i < MAX_BLOCKS; i++) {
+    if (fs.bitmap[i] == '1') {
+      return i;
+    }
+  }
+  throw "Não há espaço disponível em disco!";
+}
+
+
+/**
+ * Inicializa um diretório vazio a partir do primeiro bloco disponível.
+ */
+vdir_t new_dir(string name) {
+  vdir_t dir;
+  time_t now;
+  int head_block;
+
+  now = time(nullptr);
+  head_block = find_empty_block();
+
+  dir.created = now;
+  dir.last_access = now;
+  dir.last_modified = now;
+  dir.name = name;
+  dir.head = head_block;
+
+  /**
+   * Marca como usado, no filesystem, o espaço do arquivo recém-criado.
+   */
+  fs.bitmap[head_block] = 0;
+  fs.fat[head_block] = -1;
+
+  return dir;
+}
+
+
+void update_dir_block(int position, vdir_t dir) {
+  string new_block;
+  char size[9];
+  char head[6];
+  char name[NAME_SIZE];
+
+  fs.file.seekp(position, ios::beg);
+
+  debug("block", position / BLOCK_SIZE);
+  debug("will write children", dir.children.size());
+
+  new_block = "";
+  for (auto child : dir.children) {
+    sprintf(size, "%08zu", child.size);
+    sprintf(head, "%05d", child.head);
+    strcpy(name, child.name.c_str());
+
+    debug("escrevendo", child.name);
+    new_block.append(to_string(child.created));
+    new_block.append(to_string(child.last_access));
+    new_block.append(to_string(child.last_modified));
+    new_block.append(child.is_dir ? "1" : "0");
+    new_block.append(head);
+    new_block.append(size);
+    new_block.append(name);
+  }
+
+  /**
+   * Um metadado de controle, com created nulo, é adicionado após o último filho
+   * escrito no bloco, de modo a registrar o "fim" da lista de filhos. Isso não é
+   * necessário quando um diretório possui o número máximo de filhos possível.
+   */
+  if (dir.children.size() != MAX_CHILDREN_PER_DIR) {
+    new_block.append("000000000");
+  }
+
+  fs.bitmap[position] = 0;
+  fs.fat[position] = -1;
+  fs.blocks[position] = new_block;
+}
+
+
+void init_root_dir() {
+  vdir_t root_dir, root_dir_parent;
+  vattr_t root_attrs;
+  time_t now;
+  int root_pos;
+
+  now = time(nullptr);
+  root_pos = INITIAL_BLOCK;
+
+  root_attrs.created = now;
+  root_attrs.last_access = now;
+  root_attrs.last_modified = now;
+  root_attrs.size = 0;
+  root_attrs.head = root_pos + 1;
+  root_attrs.is_dir = 1;
+  root_attrs.name = "/";
+
+  /**
+   * Adiciona '/' como filho do pseudo-diretório inicial.
+   */
+  root_dir_parent.children.push_back(root_attrs);
+
+  update_dir_block(root_pos, root_dir_parent);
+  update_dir_block(root_pos+1, root_dir);
+}
+
+
+/**
  * Inicializa um filesystem vazio no arquivo apontado em fs. Isso inclui escrever lá
  * um bitmap vazio, uma quase–vazia tabela fat e os metadados do diretório /
  */
@@ -205,6 +349,7 @@ void init_empty_fs() {
 
   write_bitmap_to_blocks();
   write_fat_to_blocks();
+  init_root_dir();
 }
 
 
@@ -477,6 +622,7 @@ int main() {
   cmd_t command;
 
   time(&start);
+  debug("size", to_string(start).length());
 
   while (1) {
     command = prompt_command();
