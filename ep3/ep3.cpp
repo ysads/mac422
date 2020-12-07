@@ -57,24 +57,26 @@ using namespace std;
 #define fail(msg) cerr << "=> ERRO: " << msg << endl;
 
 
+
 /**
  * Representa os metadados de um único arquivo dentro do sistema de arquivos.
  * Note que, apesar de não haver um limite explícito para o tamanho de `name`,
  * consideremos como 255 caracters tal limite.
  */
+typedef struct {
+  string name;
+  time_t created;
+  time_t last_access;
+  time_t last_modified;
+  size_t size;
+  int is_dir;
+  int head;
+} vattr_t;
 
 
- typedef struct {
-   string name;
-   time_t created;
-   time_t last_access;
-   time_t last_modified;
-   size_t size;
-   int is_dir;
-   int head;
- } vattr_t;
-
-
+/**
+ * Representa um arquivo dentro do sistema de arquivos.
+ */
 typedef struct {
   int head;
   string name;
@@ -111,6 +113,7 @@ typedef struct vdir_t{
    string blocks[MAX_BLOCKS];
  } filesystem_t;
 
+
 /**
  * Abstrai um comando para o sistema de arquivo, separando comando built-in
  * dos seus argumentos.
@@ -125,22 +128,11 @@ vdir_t* root;
 filesystem_t fs;
 
 
-void print_cmd(cmd_t command) {
-  cout << endl << "cmd> " <<  command.cmd << endl;
-
-  for (auto it = command.args.begin(); it != command.args.end(); it++) {
-    cout << "> " << *it << endl;
-  }
-  cout << endl;
-}
-
-
 /**
  * Diz se o arquivo lido está vazio comparando o número de bytes da atual posição.
  * OBS: depende de a posição atual corresponder ao final do arquivo.
  */
 bool is_fs_empty() {
-  cout << "pos: " << fs.file.tellg() << endl;
   return fs.file.tellg() <= 0;
 }
 
@@ -270,6 +262,10 @@ vdir_t new_dir(string name) {
 }
 
 
+/**
+ * Atualiza um bloco de diretório dentro do filesystem, reescrevendo seu
+ * conteúdo de acordo com a struct recebida como argumento.
+ */
 void update_dir_block(int position, vdir_t dir) {
   string new_block;
   char size[9];
@@ -346,7 +342,7 @@ void init_root_dir() {
 void init_empty_fs() {
   for (int i = 0; i < MAX_BLOCKS; i++) {
     fs.bitmap[i] = 1;
-    fs.fat[i] = i;
+    fs.fat[i] = -1;
     fs.blocks[i] = "";
   }
 
@@ -727,11 +723,6 @@ void delete_dir (cmd_t command) {
   free(diretorio);
 }
 
-/*Mostra estatísticas do programa*/
-void df(){
-  /*estatisticas*/
-}
-
 
 /*Encontra a partir do diretorio command.args[1] todos os arquivos com
  *o nome command.arg[0]
@@ -756,14 +747,12 @@ void find_file (cmd_t command){
     }
     find_file(comando);
   }
-
-
 }
 
 
 /*Imprime todo o conteúdo de um arquivo
  */
-void print_file (cmd_t command){
+void print_file (cmd_t command) {
   string line;
   fstream arquivo;
   arquivo.open(command.args[0]);
@@ -828,7 +817,6 @@ void touch_file (cmd_t command){
     arquivo->size=4000;
     time(&arquivo->created);
   }
-
 }
 
 
@@ -854,16 +842,6 @@ void print_dir (cmd_t command){
   }
 
 }
-
-
-void hook(cmd_t command) {
-  int pos = stoi(command.args[0]);
-
-  printf("--------- #%d\n", pos);
-  printf("bitmap: %d\n", fs.bitmap[pos]);
-  printf("fat: %d\n", fs.fat[pos]);
-}
-
 
 
 /**
@@ -932,10 +910,6 @@ void execute(cmd_t command) {
       print_dir(command);
     }else if(command.cmd == "find"){
       find_file(command);
-    }else if(command.cmd == "df"){
-      df();
-    }else if (command.cmd == "hook") {
-      hook(command);
     }
   }catch (const char* msg) {
     fail(msg);
