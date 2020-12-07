@@ -423,6 +423,8 @@ void unmount(cmd_t command) {
 }
 
 
+/* Copia o arquivo que está em command.args[0] para o endereço command.args[1].
+ */
 void cp (cmd_t command){
   fstream file;
   vfile_t arq;
@@ -518,7 +520,8 @@ void cp (cmd_t command){
   dir->children.push_back(copy);
 }
 
-
+/*Cria o diretório com o endereço de commandd.args[0]
+ */
 void create_dir (cmd_t command) {
   vdir_t* diretorio, *dir_pai;
   string aux, name="", pai="";
@@ -568,7 +571,8 @@ void create_dir (cmd_t command) {
 
 }
 
-
+/*Subfunção para localizar a pasta com o nome "pasta"
+ */
 vdir_t* achar_pasta (string pasta, vdir_t* diretorio){
   if(diretorio->dir_children.empty()){
     return nullptr;
@@ -589,6 +593,8 @@ vdir_t* achar_pasta (string pasta, vdir_t* diretorio){
 }
 
 
+/*subfunção para localizar o arquivo com o nome "arquivo"
+ */
 vdir_t* achar_arquivo_2(string arquivo, vdir_t* diretorio){
   if(diretorio->file_children.empty()){
     return nullptr;
@@ -609,20 +615,39 @@ vdir_t* achar_arquivo_2(string arquivo, vdir_t* diretorio){
 }
 
 
+/*função responsável por remover um arquivo com o nome command.args[0]
+ */
 void remove_file (cmd_t command){
   vfile_t* arquivo;
   vdir_t* dir;
-  int i;
+  vattr_t copy;
+  string aux, arq="", pai;
+  int i, pos, count;
   dir= root;
 
+  aux=command.args[1];
+  for(i=1; i<aux.size(); i++){
+    if(aux[i]=='/'){
+      pai = arq;
+      arq.clear();
+      for(vdir_t* procura : dir->dir_children){
+        if(procura->name==pai){
+          dir = procura;
+          break;
+        }
+      }
+    }else{
+      arq+=aux[i];
+    }
+  }
 
-  dir=achar_arquivo_2(command.args[0], root);
   i=0;
   for(vfile_t procura : dir->file_children){
     i++;
     if(procura.name == command.args[0]){
       arquivo = &procura;
       dir->file_children.erase(dir->file_children.begin()+i);
+      dir->children.erase(dir->children.begin()+i);
       break;
     }
   }
@@ -636,10 +661,27 @@ void remove_file (cmd_t command){
 }
 
 
+/*Apaga o diretorio de command.args[0] e tudo que está dentro delete
+ */
 void delete_dir (cmd_t command) {
   vdir_t* diretorio, *dir_pai;
-  string dir;
+  string dir, aux, name="", pai="";
   int i;
+
+  for(i=1; i<aux.size(); i++){
+    if(aux[i]=='/'){
+      pai = name;
+      name.clear();
+      for(vdir_t* procura : dir_pai->dir_children){
+        if(procura->name==pai){
+          dir_pai = procura;
+          break;
+        }
+      }
+    }else{
+      name+=aux[i];
+    }
+  }
 
   dir = "";
   for(i=1; i<command.args[0].size();i++){
@@ -685,12 +727,15 @@ void delete_dir (cmd_t command) {
   free(diretorio);
 }
 
-
+/*Mostra estatísticas do programa*/
 void df(){
   /*estatisticas*/
 }
 
 
+/*Encontra a partir do diretorio command.args[1] todos os arquivos com
+ *o nome command.arg[0]
+ */
 void find_file (cmd_t command){
   vdir_t* pasta;
 
@@ -716,6 +761,8 @@ void find_file (cmd_t command){
 }
 
 
+/*Imprime todo o conteúdo de um arquivo
+ */
 void print_file (cmd_t command){
   string line;
   fstream arquivo;
@@ -732,33 +779,32 @@ void print_file (cmd_t command){
 }
 
 
-vfile_t* achar_arquivo(string arquivo, vdir_t* diretorio){
-  int i=0;
-  if(diretorio->file_children.empty()){
-    return nullptr;
-  }
-  for(vfile_t procura:diretorio->file_children){
-    if(procura.name == arquivo){
-
-      return &diretorio->file_children[i];
-    }
-    i++;
-  }
-  for(vdir_t* procura:diretorio->dir_children){
-    vfile_t* novo;
-    novo =achar_arquivo(arquivo, procura);
-    if(novo != nullptr){
-      return novo;
-    }
-  }
-  return nullptr;
-}
-
-
+/*se o arquivo command.args[0] existe, atualiza o ultimo acesso dele,
+ *se o arquivo não existe, cria um arquivo vazio.
+ */
 void touch_file (cmd_t command){
   vfile_t* arquivo;
+  vattr_t copy;
+  vdir_t* dir;
+  string aux, arq="", pai;
+  int i, pos, count;
 
-  arquivo = achar_arquivo(command.args[0], root);
+  dir= root;
+  aux=command.args[1];
+  for(i=1; i<aux.size(); i++){
+    if(aux[i]=='/'){
+      pai = arq;
+      arq.clear();
+      for(vdir_t* procura : dir->dir_children){
+        if(procura->name==pai){
+          dir = procura;
+          break;
+        }
+      }
+    }else{
+      arq+=aux[i];
+    }
+  }
 
   if(arquivo!=nullptr){
     time(&arquivo->last_access);
@@ -771,8 +817,15 @@ void touch_file (cmd_t command){
       arquivo->name+= " ";
     }
     arquivo->name.pop_back();
-
-    arquivo->size=0;
+    for(i=0; i<MAX_BLOCKS; i++){
+      if(fs.bitmap[i]==1){
+        arquivo->head = i;
+        fs.bitmap[i]=0;
+        fs.fat[i]=-1;
+        fs.blocks[i].clear();
+      }
+    }
+    arquivo->size=4000;
     time(&arquivo->created);
   }
 
@@ -783,7 +836,7 @@ void print_dir (cmd_t command){
   vdir_t* diretorio;
   int i;
 
-  achar_pasta(command.args[0], root);
+  diretorio=achar_pasta(command.args[0], root);
 
   if(diretorio->file_children.empty() && diretorio->dir_children.empty()){
     cout << "A pasta " << diretorio->name << " está vazia\n";
